@@ -1,0 +1,46 @@
+{
+  "log_level": "INFO",
+  "sqlite_path": "data/monitor_state.db",
+  "poll": {
+    "interval_seconds": 60,
+    "timeout_seconds": 10,
+    "request_jitter_seconds": 3
+  },
+  "alerts": {
+    "notify_on_states": [
+      "IN_STOCK"
+    ],
+    "notify_on_first_seen": true,
+    "failure_threshold": 3,
+    "failure_repeat_every": 10
+  },
+  "notify": {
+    "feishu_webhook": "",
+    "email": {
+      "enabled": false,
+      "smtp_host": "smtp.126.com",
+      "smtp_port": 465,
+      "username": "",
+      "password": "",
+      "from_addr": "",
+      "to_addrs": [
+        "you@example.com"
+      ],
+      "use_tls": false,
+      "use_ssl": true
+    }
+  },
+  "request_headers": {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1"
+  },
+  "targets": [
+    {
+      "name": "春意寻味双人餐",
+      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1682152928&shareid=na9FADQlIH_1772629866784"
+    },
+    {
+      "name": "刘家蹄髈",
+      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1221425037&shareid=V9vLpdwZda_1772628220643"
+    }
+  ]
+}
