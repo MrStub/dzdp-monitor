@@ -11,8 +11,8 @@
       "IN_STOCK"
     ],
     "notify_on_first_seen": true,
-    "failure_threshold": 3,
-    "failure_repeat_every": 10
+    "notify_failures": true,
+    "failure_threshold": 5
   },
   "notify": {
     "feishu_webhook": "",
@@ -36,11 +36,11 @@
   "targets": [
     {
       "name": "春意寻味双人餐",
-      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1682152928&shareid=na9FADQlIH_1772629866784"
+      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1682152928"
     },
     {
       "name": "刘家蹄髈",
-      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1221425037&shareid=V9vLpdwZda_1772628220643"
+      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1221425037"
     }
   ]
 }
