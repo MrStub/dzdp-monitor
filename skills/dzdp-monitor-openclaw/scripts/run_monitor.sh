@@ -70,6 +70,48 @@ Notes:
   - minimum poll interval is 5 seconds
 EOF
     ;;
+  help-zh)
+    cat <<'EOF'
+dzdp-monitor-openclaw 中文命令清单
+
+一、监控运行
+  run_monitor.sh once [--config <config_path>]
+  run_monitor.sh start [--config <config_path>]
+  run_monitor.sh test-email [--config <config_path>]
+
+二、套餐管理
+  run_monitor.sh targets [--config <config_path>] list [--json]
+  run_monitor.sh targets [--config <config_path>] add --name "<套餐名>" --url "<链接>" [--json]
+  run_monitor.sh targets [--config <config_path>] get --index <序号> [--json]
+  run_monitor.sh targets [--config <config_path>] get --name "<套餐名>" [--json]
+  run_monitor.sh targets [--config <config_path>] get --url "<链接>" [--json]
+  run_monitor.sh targets [--config <config_path>] get --activity-id <activityid> [--json]
+  run_monitor.sh targets [--config <config_path>] update --index <序号> --set-name "<新套餐名>" [--json]
+  run_monitor.sh targets [--config <config_path>] update --index <序号> --set-url "<新链接>" [--json]
+  run_monitor.sh targets [--config <config_path>] remove --index <序号> [--json]
+  run_monitor.sh targets [--config <config_path>] remove --name "<套餐名>" [--json]
+  run_monitor.sh targets [--config <config_path>] remove --url "<链接>" [--json]
+  run_monitor.sh targets [--config <config_path>] remove --activity-id <activityid> [--json]
+
+三、轮询时间
+  run_monitor.sh poll [--config <config_path>] get [--json]
+  run_monitor.sh poll [--config <config_path>] set --seconds <秒数> [--json]
+
+常用中文口令：
+  查看监控列表
+  添加监控：套餐名，链接
+  删除监控：序号
+  删除监控：套餐名
+  查看轮询时间
+  修改轮询时间：30秒
+  单次检查库存
+
+说明：
+  - 链接会自动去掉 shareid
+  - 套餐列表和轮询时间修改会热更新到运行中的监控进程
+  - 最小轮询时间是 5 秒
+EOF
+    ;;
   once)
     exec python3 "${MONITOR_PY}" --config "${CONFIG_PATH}" --once
     ;;
@@ -97,6 +139,7 @@ EOF
     echo "Unknown action: ${ACTION}" >&2
     echo "Usage:" >&2
     echo "  run_monitor.sh help" >&2
+    echo "  run_monitor.sh help-zh" >&2
     echo "  run_monitor.sh {once|start|test-email} [--config <config_path>]" >&2
     echo "  run_monitor.sh targets [--config <config_path>] {list|get|add|update|remove} ..." >&2
     echo "  run_monitor.sh poll [--config <config_path>] {get|set --seconds <n>}" >&2

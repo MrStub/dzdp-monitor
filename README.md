@@ -54,6 +54,12 @@ python3 monitor.py --config config.json
 ./skills/dzdp-monitor-openclaw/scripts/run_monitor.sh help
 ```
 
+查看 skill 中文命令清单：
+
+```bash
+./skills/dzdp-monitor-openclaw/scripts/run_monitor.sh help-zh
+```
+
 查看当前轮询间隔：
 
 ```bash

@@ -10,6 +10,7 @@ Use this skill to operate the local Dianping monitor in this repository, includi
 
 If the user asks to install this skill, deploy the monitor to a server, or prepare Docker deployment handoff for OpenClaw, read [references/server-docker-deploy.md](references/server-docker-deploy.md) and follow that workflow.
 If the user asks what commands are available, asks for help, or asks how to use the skill, read [references/command-catalog.md](references/command-catalog.md) and answer with the grouped command list.
+If the user asks in Chinese what commands are available, asks for Chinese help, or asks how to instruct OpenClaw in Chinese, read [references/command-catalog-zh.md](references/command-catalog-zh.md) and answer in Chinese.
 
 Target URLs should be normalized before storing:
 - Keep `activityid`
@@ -65,6 +66,9 @@ Use `--json` on any target command to return machine-readable output.
 - If user says "有哪些命令 / 帮助 / help / 怎么用":
   - Read [references/command-catalog.md](references/command-catalog.md)
   - Answer with the grouped command list and one example per group
+- If user says "中文帮助 / 中文命令 / 我可以怎么指挥你 / 有哪些中文口令":
+  - Read [references/command-catalog-zh.md](references/command-catalog-zh.md)
+  - Answer in Chinese with grouped commands and example phrases
 - If user says "查看监控列表 / 列出套餐":
   - Run `scripts/run_monitor.sh targets list --json`
 - If user says "新增监控"，输入格式是 `套餐名，链接`:
