@@ -451,13 +451,20 @@ def render_product_summary(target: Target, product: Dict[str, Any], state: str) 
 
 
 def render_in_stock_alert(target: Target, product: Dict[str, Any]) -> str:
-    title = str(product.get("title") or target.name or "").strip() or target.name
+    configured_name = str(target.name or "").strip() or "(未命名监控项)"
+    api_title = str(product.get("title") or "").strip()
+
     lines = [
         "检测到套餐有货",
-        f"套餐名: {title}",
+        f"套餐名: {configured_name}",
+    ]
+    if api_title and api_title != configured_name:
+        lines.append(f"接口名称: {api_title}")
+
+    lines.extend([
         f"链接: {target.url}",
         f"时间: {now_local()}",
-    ]
+    ])
     return "\n".join(lines)
 
 
