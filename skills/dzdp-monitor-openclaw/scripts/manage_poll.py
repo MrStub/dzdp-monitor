@@ -5,45 +5,12 @@ import os
 import sys
 from typing import Any, Dict
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../.."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
-MIN_INTERVAL_SECONDS = 5
-
-
-def load_config(path: str) -> Dict[str, Any]:
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"config not found: {path}")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-
-def save_config(path: str, data: Dict[str, Any]) -> None:
-    tmp_path = f"{path}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    os.replace(tmp_path, path)
-
-
-
-def ensure_poll(config: Dict[str, Any]) -> Dict[str, Any]:
-    poll = config.get("poll")
-    if not isinstance(poll, dict):
-        config["poll"] = {}
-        poll = config["poll"]
-    return poll
-
-
-
-def get_interval_seconds(config: Dict[str, Any]) -> int:
-    poll = ensure_poll(config)
-    raw = poll.get("interval_seconds", 60)
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        value = 60
-    return max(MIN_INTERVAL_SECONDS, value)
-
+from app_config import MIN_INTERVAL_SECONDS, ensure_poll, get_interval_seconds, load_config, save_config  # noqa: E402
 
 
 def cmd_get(config: Dict[str, Any], as_json: bool) -> int:
@@ -56,13 +23,9 @@ def cmd_get(config: Dict[str, Any], as_json: bool) -> int:
     return 0
 
 
-
 def cmd_set(config: Dict[str, Any], seconds: int, as_json: bool) -> int:
     if seconds < MIN_INTERVAL_SECONDS:
-        print(
-            f"interval_seconds must be >= {MIN_INTERVAL_SECONDS}",
-            file=sys.stderr,
-        )
+        print(f"interval_seconds must be >= {MIN_INTERVAL_SECONDS}", file=sys.stderr)
         return 2
 
     poll = ensure_poll(config)
@@ -79,7 +42,6 @@ def cmd_set(config: Dict[str, Any], seconds: int, as_json: bool) -> int:
     else:
         print(f"UPDATED: interval_seconds={old_value} -> {int(seconds)}")
     return 0
-
 
 
 def build_parser(default_config: str) -> argparse.ArgumentParser:
@@ -99,10 +61,8 @@ def build_parser(default_config: str) -> argparse.ArgumentParser:
     return parser
 
 
-
 def main() -> int:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    default_config = os.path.abspath(os.path.join(script_dir, "../../../config.json"))
+    default_config = os.path.abspath(os.path.join(SCRIPT_DIR, "../../../config.json"))
     parser = build_parser(default_config)
     args = parser.parse_args()
     as_json = bool(getattr(args, "json", False))

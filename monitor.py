@@ -14,23 +14,30 @@ from dataclasses import dataclass
 from datetime import datetime
 from email.mime.text import MIMEText
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 
+from app_config import (
+    get_interval_seconds,
+    list_targets,
+    load_config,
+    normalize_config_in_place,
+    resolve_target_feishu_webhook,
+)
+from proxy_provider import ProxyResolutionError, ProxyResolver
+
 API_ENDPOINT = "https://m.dianping.com/bwc/customer/loadVipLaunchProductBriefInfo"
-EPHEMERAL_QUERY_KEYS = {"shareid", "shareId"}
 DEFAULT_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1"
 )
-
 DEFAULT_UA_POOL = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
     "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
     "Mozilla/5.0 (Linux; Android 13; M2012K11AC) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
 ]
+UA_STICKY_MAP: Dict[str, str] = {}
 
 
 def build_generated_ua_pool(max_size: int = 400) -> List[str]:
@@ -75,7 +82,6 @@ def build_generated_ua_pool(max_size: int = 400) -> List[str]:
             f"Chrome/{chrome_major}.0.0.0 Mobile Safari/537.36"
         )
 
-    # 去重并限制数量，保证“几百种”但不无限增大内存
     deduped = list(dict.fromkeys(uas))
     random.shuffle(deduped)
     return deduped[: max(50, int(max_size))]
@@ -87,34 +93,6 @@ def now_local() -> str:
 
 def today_local() -> str:
     return datetime.now().astimezone().strftime("%Y-%m-%d")
-
-
-def parse_activity_id(url: str, explicit_activity_id: Optional[str] = None) -> Optional[str]:
-    if explicit_activity_id:
-        return str(explicit_activity_id).strip()
-    parsed = urlparse(url)
-    q = parse_qs(parsed.query)
-    for key in ("activityid", "activityId"):
-        if key in q and q[key]:
-            return q[key][0].strip()
-    return None
-
-
-def normalize_target_url(url: str) -> str:
-    raw = str(url or "").strip()
-    if not raw:
-        return ""
-    parsed = urlparse(raw)
-    filtered_query = [
-        (key, value)
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if key not in EPHEMERAL_QUERY_KEYS
-    ]
-    normalized = parsed._replace(
-        query=urlencode(filtered_query, doseq=True),
-        fragment="",
-    )
-    return urlunparse(normalized)
 
 
 def error_signature(error_text: str) -> str:
@@ -142,6 +120,15 @@ class Target:
     name: str
     url: str
     activity_id: str
+    group_key: str
+
+    def to_config_target(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "url": self.url,
+            "activity_id": self.activity_id,
+            "group_key": self.group_key,
+        }
 
 
 @dataclass
@@ -178,10 +165,7 @@ class StateStore:
             )
             """
         )
-        existing_columns = {
-            row["name"]
-            for row in self.conn.execute("PRAGMA table_info(target_state)")
-        }
+        existing_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(target_state)")}
         required_columns = {
             "last_error_text": "TEXT",
             "last_error_date": "TEXT",
@@ -189,9 +173,7 @@ class StateStore:
         }
         for column_name, column_type in required_columns.items():
             if column_name not in existing_columns:
-                self.conn.execute(
-                    f"ALTER TABLE target_state ADD COLUMN {column_name} {column_type}"
-                )
+                self.conn.execute(f"ALTER TABLE target_state ADD COLUMN {column_name} {column_type}")
 
         self.conn.execute(
             """
@@ -265,11 +247,7 @@ class StateStore:
         previous_error_text = "" if row is None else str(row["last_error_text"] or "")
         previous_error_date = "" if row is None else str(row["last_error_date"] or "")
         previous_error_streak = 0 if row is None else int(row["last_error_streak"] or 0)
-        error_streak = (
-            previous_error_streak + 1
-            if previous_error_text == error_text and previous_error_date == alert_date
-            else 1
-        )
+        error_streak = previous_error_streak + 1 if previous_error_text == error_text and previous_error_date == alert_date else 1
 
         if row is None:
             self.conn.execute(
@@ -311,20 +289,11 @@ class StateStore:
         return FailureRecord(
             fail_count=fail_count,
             error_streak=error_streak,
-            already_alerted_today=self.has_error_alerted_today(
-                target.activity_id,
-                error_text,
-                alert_date,
-            ),
+            already_alerted_today=self.has_error_alerted_today(target.activity_id, error_text, alert_date),
             alert_date=alert_date,
         )
 
-    def has_error_alerted_today(
-        self,
-        activity_id: str,
-        error_text: str,
-        alert_date: Optional[str] = None,
-    ) -> bool:
+    def has_error_alerted_today(self, activity_id: str, error_text: str, alert_date: Optional[str] = None) -> bool:
         cur = self.conn.execute(
             """
             SELECT 1
@@ -332,20 +301,11 @@ class StateStore:
             WHERE activity_id = ? AND error_signature = ? AND alert_date = ?
             LIMIT 1
             """,
-            (
-                activity_id,
-                error_signature(error_text),
-                alert_date or today_local(),
-            ),
+            (activity_id, error_signature(error_text), alert_date or today_local()),
         )
         return cur.fetchone() is not None
 
-    def mark_error_alerted(
-        self,
-        target: Target,
-        error_text: str,
-        alert_date: Optional[str] = None,
-    ) -> None:
+    def mark_error_alerted(self, target: Target, error_text: str, alert_date: Optional[str] = None) -> None:
         self.conn.execute(
             """
             INSERT OR REPLACE INTO failure_alert_history (
@@ -418,26 +378,28 @@ def send_email(email_cfg: Dict[str, Any], subject: str, body: str) -> Tuple[bool
         return False, str(exc)
 
 
-def notify_all(
+def notify_channels(
     config: Dict[str, Any],
     subject: str,
     body: str,
+    *,
     feishu_text: Optional[str] = None,
+    feishu_webhook: str = "",
 ) -> bool:
-    notify_cfg = config.get("notify", {})
+    notify_cfg = config.get("notify", {}) or {}
     any_sent = False
 
-    feishu_webhook = notify_cfg.get("feishu_webhook", "")
-    if feishu_webhook:
+    effective_webhook = str(feishu_webhook or "").strip()
+    if effective_webhook:
         text = feishu_text if feishu_text is not None else f"{subject}\n{body}"
-        ok, detail = send_feishu(feishu_webhook, text)
+        ok, detail = send_feishu(effective_webhook, text)
         if ok:
             logging.info("Feishu notification sent")
             any_sent = True
         else:
             logging.error("Feishu notification failed: %s", detail)
 
-    email_cfg = notify_cfg.get("email", {})
+    email_cfg = notify_cfg.get("email", {}) or {}
     if email_cfg.get("enabled", False):
         ok, detail = send_email(email_cfg, subject, body)
         if ok:
@@ -448,14 +410,27 @@ def notify_all(
     return any_sent
 
 
+def notify_target(config: Dict[str, Any], target: Target, subject: str, body: str) -> bool:
+    target_webhook = resolve_target_feishu_webhook(config, target.to_config_target())
+    return notify_channels(
+        config,
+        subject,
+        body,
+        feishu_text=body,
+        feishu_webhook=target_webhook,
+    )
+
+
 def fetch_product_brief(
     session: requests.Session,
     activity_id: str,
     timeout_seconds: int,
+    *,
+    proxies: Optional[Dict[str, str]] = None,
 ) -> Tuple[bool, Dict[str, Any], str]:
     params = {"activityId": activity_id, "source": "share"}
     try:
-        resp = session.get(API_ENDPOINT, params=params, timeout=timeout_seconds)
+        resp = session.get(API_ENDPOINT, params=params, timeout=timeout_seconds, proxies=proxies)
         resp.raise_for_status()
         data = resp.json()
     except Exception as exc:  # noqa: BLE001
@@ -480,6 +455,7 @@ def render_product_summary(target: Target, product: Dict[str, Any], state: str) 
     lines = [
         f"监控项: {target.name}",
         f"活动ID: {target.activity_id}",
+        f"通知分组: {target.group_key}",
         f"库存状态: {state_to_cn(state)}",
         f"套餐名称: {product.get('title') or '-'}",
         (
@@ -502,7 +478,7 @@ def render_product_summary(target: Target, product: Dict[str, Any], state: str) 
         f"时间: {now_local()}",
     ]
     if sold_info.get("halfYearSoldNum") is not None:
-        lines.insert(4, f"半年售: {sold_info.get('halfYearSoldNum')}")
+        lines.insert(5, f"半年售: {sold_info.get('halfYearSoldNum')}")
     return "\n".join(lines)
 
 
@@ -513,6 +489,7 @@ def render_in_stock_alert(target: Target, product: Dict[str, Any]) -> str:
     lines = [
         "检测到套餐有货",
         f"套餐名: {configured_name}",
+        f"通知分组: {target.group_key}",
     ]
     if api_title and api_title != configured_name:
         lines.append(f"接口名称: {api_title}")
@@ -528,6 +505,7 @@ def render_failure_alert(target: Target, error_text: str, error_streak: int) -> 
     lines = [
         "监控异常",
         f"监控项: {target.name}",
+        f"通知分组: {target.group_key}",
         f"链接: {target.url}",
         f"相同报错当日连续次数: {error_streak}",
         f"错误: {error_text}",
@@ -536,28 +514,25 @@ def render_failure_alert(target: Target, error_text: str, error_streak: int) -> 
     return "\n".join(lines)
 
 
-def load_config(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
 def build_targets(config: Dict[str, Any]) -> List[Target]:
-    targets_cfg = config.get("targets", [])
-    if not targets_cfg:
+    normalize_config_in_place(config)
+    rows = list_targets(config)
+    if not rows:
         raise ValueError("config.targets 不能为空")
 
     targets: List[Target] = []
-    for i, item in enumerate(targets_cfg, start=1):
-        url = normalize_target_url(str(item.get("url", "")).strip())
-        if not url:
-            raise ValueError(f"targets[{i}] 缺少 url")
-        activity_id = parse_activity_id(url, item.get("activity_id"))
+    for row in rows:
+        activity_id = str(row.get("activity_id") or "").strip()
         if not activity_id:
-            raise ValueError(
-                f"targets[{i}] 无法解析 activityid，请在配置中显式提供 activity_id"
+            raise ValueError("存在监控项缺少 activity_id")
+        targets.append(
+            Target(
+                name=str(row.get("name") or f"target-{activity_id}").strip(),
+                url=str(row.get("url") or "").strip(),
+                activity_id=activity_id,
+                group_key=str(row.get("group_key") or "default").strip(),
             )
-        name = str(item.get("name", f"target-{activity_id}")).strip()
-        targets.append(Target(name=name, url=url, activity_id=activity_id))
+        )
     return targets
 
 
@@ -566,20 +541,44 @@ def run_cycle(
     targets: List[Target],
     store: StateStore,
     session: requests.Session,
+    proxy_resolver: ProxyResolver,
 ) -> None:
-    poll_cfg = config.get("poll", {})
+    poll_cfg = config.get("poll", {}) or {}
     timeout_seconds = int(poll_cfg.get("timeout_seconds", 10))
     jitter_seconds = float(poll_cfg.get("request_jitter_seconds", 0))
 
-    alerts_cfg = config.get("alerts", {})
+    alerts_cfg = config.get("alerts", {}) or {}
     notify_on_states = set(alerts_cfg.get("notify_on_states", ["IN_STOCK"]))
     notify_on_first_seen = bool(alerts_cfg.get("notify_on_first_seen", True))
     failure_threshold = max(1, int(alerts_cfg.get("failure_threshold", 5)))
     notify_failures = bool(alerts_cfg.get("notify_failures", False))
 
     for idx, target in enumerate(targets):
-        session.headers["User-Agent"] = resolve_user_agent(config, session, target.activity_id)
-        ok, data, err = fetch_product_brief(session, target.activity_id, timeout_seconds)
+        session.headers["User-Agent"] = resolve_user_agent(config, target.activity_id)
+
+        try:
+            proxies = proxy_resolver.get_requests_proxies(config, target_key=target.activity_id)
+        except ProxyResolutionError as exc:
+            err = f"proxy resolve error: {exc}"
+            failure = store.record_failure(target, err)
+            logging.warning(
+                "[%s] proxy resolution failed (fail_count=%s same_error_streak=%s): %s",
+                target.name,
+                failure.fail_count,
+                failure.error_streak,
+                err,
+            )
+            if notify_failures and failure.error_streak >= failure_threshold and not failure.already_alerted_today:
+                subject = f"[点评库存监控异常] {target.name}"
+                body = render_failure_alert(target, err, failure.error_streak)
+                sent = notify_target(config, target, subject, body)
+                if sent:
+                    store.mark_error_alerted(target, err, failure.alert_date)
+            if idx < len(targets) - 1 and jitter_seconds > 0:
+                time.sleep(random.uniform(0, jitter_seconds))
+            continue
+
+        ok, data, err = fetch_product_brief(session, target.activity_id, timeout_seconds, proxies=proxies)
         if not ok:
             failure = store.record_failure(target, err)
             logging.warning(
@@ -589,15 +588,11 @@ def run_cycle(
                 failure.error_streak,
                 err,
             )
-            should_alert = (
-                notify_failures
-                and failure.error_streak >= failure_threshold
-                and not failure.already_alerted_today
-            )
+            should_alert = notify_failures and failure.error_streak >= failure_threshold and not failure.already_alerted_today
             if should_alert:
                 subject = f"[点评库存监控异常] {target.name}"
                 body = render_failure_alert(target, err, failure.error_streak)
-                sent = notify_all(config, subject, body, feishu_text=body)
+                sent = notify_target(config, target, subject, body)
                 if sent:
                     store.mark_error_alerted(target, err, failure.alert_date)
             if idx < len(targets) - 1 and jitter_seconds > 0:
@@ -622,7 +617,7 @@ def run_cycle(
             changed=changed,
         )
 
-        logging.info("[%s] state=%s soldOut=%s title=%s", target.name, state, sold_out, title)
+        logging.info("[%s] state=%s soldOut=%s title=%s group=%s", target.name, state, sold_out, title, target.group_key)
 
         if changed:
             if old is None and not notify_on_first_seen:
@@ -630,21 +625,17 @@ def run_cycle(
             elif state in notify_on_states:
                 subject = f"[点评库存] {state_to_cn(state)} - {target.name}"
                 body = render_in_stock_alert(target, product)
-                notify_all(config, subject, body, feishu_text=body)
+                notify_target(config, target, subject, body)
 
         if idx < len(targets) - 1 and jitter_seconds > 0:
             time.sleep(random.uniform(0, jitter_seconds))
 
 
-def resolve_user_agent(
-    config: Dict[str, Any],
-    session: requests.Session,
-    target_key: Optional[str] = None,
-) -> str:
-    headers = config.get("request_headers", {})
-    fixed_ua = headers.get("User-Agent", DEFAULT_UA)
+def resolve_user_agent(config: Dict[str, Any], target_key: Optional[str] = None) -> str:
+    headers = config.get("request_headers", {}) or {}
+    fixed_ua = str(headers.get("User-Agent") or DEFAULT_UA)
 
-    ua_cfg = config.get("user_agent", {})
+    ua_cfg = config.get("user_agent", {}) or {}
     mode = str(ua_cfg.get("mode", "fixed")).strip().lower()
     pool = [str(x).strip() for x in (ua_cfg.get("pool") or []) if str(x).strip()]
     generated_pool_size = int(ua_cfg.get("generated_pool_size", 400))
@@ -658,22 +649,18 @@ def resolve_user_agent(
         return random.choice(candidates)
 
     if mode == "per_target_sticky":
-        sticky_map = getattr(session, "_ua_sticky_map", None)
-        if sticky_map is None:
-            sticky_map = {}
-            setattr(session, "_ua_sticky_map", sticky_map)
         key = target_key or "__default__"
-        if key not in sticky_map:
-            sticky_map[key] = random.choice(candidates)
-        return sticky_map[key]
+        if key not in UA_STICKY_MAP:
+            UA_STICKY_MAP[key] = random.choice(candidates)
+        return UA_STICKY_MAP[key]
 
     return fixed_ua
 
 
 def build_requests_session(config: Dict[str, Any]) -> requests.Session:
     sess = requests.Session()
-    headers = config.get("request_headers", {})
-    ua = resolve_user_agent(config, sess)
+    headers = config.get("request_headers", {}) or {}
+    ua = resolve_user_agent(config)
     default_headers = {
         "User-Agent": ua,
         "Accept": "application/json, text/plain, */*",
@@ -683,8 +670,8 @@ def build_requests_session(config: Dict[str, Any]) -> requests.Session:
     return sess
 
 
-def target_signature(targets: List[Target]) -> Tuple[Tuple[str, str, str], ...]:
-    return tuple((target.activity_id, target.name, target.url) for target in targets)
+def target_signature(targets: List[Target]) -> Tuple[Tuple[str, str, str, str], ...]:
+    return tuple((target.activity_id, target.name, target.url, target.group_key) for target in targets)
 
 
 def main() -> int:
@@ -706,7 +693,7 @@ def main() -> int:
         format="%(asctime)s | %(levelname)s | %(message)s",
     )
 
-    ua_cfg = config.get("user_agent", {})
+    ua_cfg = config.get("user_agent", {}) or {}
     ua_mode = str(ua_cfg.get("mode", "fixed")).strip().lower()
     ua_pool_size = len(ua_cfg.get("pool") or [])
     generated_pool_size = int(ua_cfg.get("generated_pool_size", 400))
@@ -737,16 +724,17 @@ def main() -> int:
         return 2
 
     store = StateStore(db_path)
-    last_signature: Optional[Tuple[Tuple[str, str, str], ...]] = None
+    proxy_resolver = ProxyResolver()
+    last_signature: Optional[Tuple[Tuple[str, str, str, str], ...]] = None
 
     try:
         if args.once:
             targets = build_targets(config)
             logging.info("Loaded %s targets", len(targets))
             for target in targets:
-                logging.info("Target: %s | activity_id=%s", target.name, target.activity_id)
+                logging.info("Target: %s | activity_id=%s | group=%s", target.name, target.activity_id, target.group_key)
             session = build_requests_session(config)
-            run_cycle(config, targets, store, session)
+            run_cycle(config, targets, store, session, proxy_resolver)
             session.close()
             return 0
 
@@ -757,14 +745,13 @@ def main() -> int:
             if signature != last_signature:
                 logging.info("Reloaded %s targets from config", len(targets))
                 for target in targets:
-                    logging.info("Target: %s | activity_id=%s", target.name, target.activity_id)
+                    logging.info("Target: %s | activity_id=%s | group=%s", target.name, target.activity_id, target.group_key)
                 last_signature = signature
 
-            interval_seconds = int((config.get("poll", {}) or {}).get("interval_seconds", 60))
-            interval_seconds = max(5, interval_seconds)
+            interval_seconds = get_interval_seconds(config)
             session = build_requests_session(config)
             start = time.time()
-            run_cycle(config, targets, store, session)
+            run_cycle(config, targets, store, session, proxy_resolver)
             session.close()
             elapsed = time.time() - start
             sleep_for = max(0, interval_seconds - elapsed)

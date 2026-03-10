@@ -10,8 +10,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 CONFIG_PATH="${ROOT_DIR}/config.json"
 MONITOR_PY="${ROOT_DIR}/monitor.py"
+ADMIN_API_PY="${ROOT_DIR}/admin_api.py"
 MANAGE_PY="${SCRIPT_DIR}/manage_targets.py"
 POLL_PY="${SCRIPT_DIR}/manage_poll.py"
+GROUPS_PY="${SCRIPT_DIR}/manage_notify_groups.py"
 
 # Preferred config override: --config /path/to/config.json
 if [[ "${1:-}" == "--config" && -n "${2:-}" ]]; then
@@ -44,17 +46,19 @@ dzdp-monitor-openclaw commands
 Monitor:
   run_monitor.sh once [--config <config_path>]
   run_monitor.sh start [--config <config_path>]
+  run_monitor.sh admin-api [--config <config_path>]
   run_monitor.sh test-email [--config <config_path>]
 
 Targets:
   run_monitor.sh targets [--config <config_path>] list [--json]
-  run_monitor.sh targets [--config <config_path>] add --name "<name>" --url "<url>" [--json]
+  run_monitor.sh targets [--config <config_path>] add --name "<name>" --url "<url>" [--group-key "<group_key>"] [--json]
   run_monitor.sh targets [--config <config_path>] get --index <n> [--json]
   run_monitor.sh targets [--config <config_path>] get --name "<name>" [--json]
   run_monitor.sh targets [--config <config_path>] get --url "<url>" [--json]
   run_monitor.sh targets [--config <config_path>] get --activity-id <id> [--json]
   run_monitor.sh targets [--config <config_path>] update --index <n> --set-name "<new_name>" [--json]
   run_monitor.sh targets [--config <config_path>] update --index <n> --set-url "<new_url>" [--json]
+  run_monitor.sh targets [--config <config_path>] update --index <n> --set-group-key "<group_key>" [--json]
   run_monitor.sh targets [--config <config_path>] remove --index <n> [--json]
   run_monitor.sh targets [--config <config_path>] remove --name "<name>" [--json]
   run_monitor.sh targets [--config <config_path>] remove --url "<url>" [--json]
@@ -64,9 +68,16 @@ Poll:
   run_monitor.sh poll [--config <config_path>] get [--json]
   run_monitor.sh poll [--config <config_path>] set --seconds <n> [--json]
 
+Notify Groups:
+  run_monitor.sh groups [--config <config_path>] list [--json]
+  run_monitor.sh groups [--config <config_path>] add --name "<name>" --webhook "<webhook>" [--key "<key>"] [--json]
+  run_monitor.sh groups [--config <config_path>] update --key "<key>" [--set-name "<name>"] [--set-webhook "<webhook>"] [--make-default] [--json]
+  run_monitor.sh groups [--config <config_path>] remove --key "<key>" [--json]
+
 Notes:
   - target URLs are normalized by removing shareid
   - target CRUD and poll changes hot reload into the running monitor
+  - target group changes hot reload into the running monitor
   - minimum poll interval is 5 seconds
 EOF
     ;;
@@ -77,17 +88,19 @@ dzdp-monitor-openclaw 中文命令清单
 一、监控运行
   run_monitor.sh once [--config <config_path>]
   run_monitor.sh start [--config <config_path>]
+  run_monitor.sh admin-api [--config <config_path>]
   run_monitor.sh test-email [--config <config_path>]
 
 二、套餐管理
   run_monitor.sh targets [--config <config_path>] list [--json]
-  run_monitor.sh targets [--config <config_path>] add --name "<套餐名>" --url "<链接>" [--json]
+  run_monitor.sh targets [--config <config_path>] add --name "<套餐名>" --url "<链接>" [--group-key "<分组key>"] [--json]
   run_monitor.sh targets [--config <config_path>] get --index <序号> [--json]
   run_monitor.sh targets [--config <config_path>] get --name "<套餐名>" [--json]
   run_monitor.sh targets [--config <config_path>] get --url "<链接>" [--json]
   run_monitor.sh targets [--config <config_path>] get --activity-id <activityid> [--json]
   run_monitor.sh targets [--config <config_path>] update --index <序号> --set-name "<新套餐名>" [--json]
   run_monitor.sh targets [--config <config_path>] update --index <序号> --set-url "<新链接>" [--json]
+  run_monitor.sh targets [--config <config_path>] update --index <序号> --set-group-key "<分组key>" [--json]
   run_monitor.sh targets [--config <config_path>] remove --index <序号> [--json]
   run_monitor.sh targets [--config <config_path>] remove --name "<套餐名>" [--json]
   run_monitor.sh targets [--config <config_path>] remove --url "<链接>" [--json]
@@ -97,18 +110,28 @@ dzdp-monitor-openclaw 中文命令清单
   run_monitor.sh poll [--config <config_path>] get [--json]
   run_monitor.sh poll [--config <config_path>] set --seconds <秒数> [--json]
 
+四、推送分组
+  run_monitor.sh groups [--config <config_path>] list [--json]
+  run_monitor.sh groups [--config <config_path>] add --name "<分组名>" --webhook "<webhook>" [--key "<分组key>"] [--json]
+  run_monitor.sh groups [--config <config_path>] update --key "<分组key>" [--set-name "<分组名>"] [--set-webhook "<webhook>"] [--make-default] [--json]
+  run_monitor.sh groups [--config <config_path>] remove --key "<分组key>" [--json]
+
 常用中文口令：
   查看监控列表
   添加监控：套餐名，链接
+  添加监控：套餐名，链接，分组key
   删除监控：序号
   删除监控：套餐名
+  查看推送分组
+  添加推送分组：分组名，webhook
+  修改监控分组：序号，分组key
   查看轮询时间
   修改轮询时间：30秒
   单次检查库存
 
 说明：
   - 链接会自动去掉 shareid
-  - 套餐列表和轮询时间修改会热更新到运行中的监控进程
+  - 套餐列表、通知分组和轮询时间修改会热更新到运行中的监控进程
   - 最小轮询时间是 5 秒
 EOF
     ;;
@@ -117,6 +140,9 @@ EOF
     ;;
   start)
     exec python3 "${MONITOR_PY}" --config "${CONFIG_PATH}"
+    ;;
+  admin-api)
+    exec python3 "${ADMIN_API_PY}" --config "${CONFIG_PATH}"
     ;;
   test-email)
     exec python3 "${MONITOR_PY}" --config "${CONFIG_PATH}" --test-email
@@ -135,14 +161,22 @@ EOF
     fi
     exec python3 "${POLL_PY}" --config "${CONFIG_PATH}" "$@"
     ;;
+  groups)
+    if [[ ! -f "${GROUPS_PY}" ]]; then
+      echo "manage_notify_groups.py not found: ${GROUPS_PY}" >&2
+      exit 2
+    fi
+    exec python3 "${GROUPS_PY}" --config "${CONFIG_PATH}" "$@"
+    ;;
   *)
     echo "Unknown action: ${ACTION}" >&2
     echo "Usage:" >&2
     echo "  run_monitor.sh help" >&2
     echo "  run_monitor.sh help-zh" >&2
-    echo "  run_monitor.sh {once|start|test-email} [--config <config_path>]" >&2
+    echo "  run_monitor.sh {once|start|admin-api|test-email} [--config <config_path>]" >&2
     echo "  run_monitor.sh targets [--config <config_path>] {list|get|add|update|remove} ..." >&2
     echo "  run_monitor.sh poll [--config <config_path>] {get|set --seconds <n>}" >&2
+    echo "  run_monitor.sh groups [--config <config_path>] {list|add|update|remove} ..." >&2
     exit 1
     ;;
 esac

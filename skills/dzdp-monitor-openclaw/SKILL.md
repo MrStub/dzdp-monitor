@@ -1,12 +1,12 @@
 ---
 name: dzdp-monitor-openclaw
-description: Monitor Dianping package stock from activityid links using monitor.py, including one-shot checks, continuous polling, target CRUD, Feishu/email notification tests, and server Docker deployment guidance for OpenClaw.
+description: Monitor Dianping package stock from activityid links using monitor.py, including one-shot checks, continuous polling, target CRUD, Feishu group routing, admin API startup, and server Docker deployment guidance for OpenClaw.
 metadata: {"openclaw":{"requires":{"bins":["python3"]}}}
 ---
 
 # Dianping Stock Monitor Skill (OpenClaw)
 
-Use this skill to operate the local Dianping monitor in this repository, including conversational CRUD management of monitor targets.
+Use this skill to operate the local Dianping monitor in this repository, including conversational CRUD management of monitor targets and Feishu routing groups.
 
 If the user asks to install this skill, deploy the monitor to a server, or prepare Docker deployment handoff for OpenClaw, read [references/server-docker-deploy.md](references/server-docker-deploy.md) and follow that workflow.
 If the user asks what commands are available, asks for help, or asks how to use the skill, read [references/command-catalog.md](references/command-catalog.md) and answer with the grouped command list.
@@ -21,8 +21,10 @@ Target URLs should be normalized before storing:
 
 - Run one-shot stock check:
   - `scripts/run_monitor.sh once`
-- Start continuous monitoring (default 60s interval from `config.json`):
+- Start continuous monitoring:
   - `scripts/run_monitor.sh start`
+- Start admin API for the Cloudflare frontend:
+  - `scripts/run_monitor.sh admin-api`
 - Test email channel only:
   - `scripts/run_monitor.sh test-email`
 
@@ -30,104 +32,61 @@ Target URLs should be normalized before storing:
 
 Use `scripts/run_monitor.sh poll ...` to read or update `config.json -> poll.interval_seconds`.
 
-- Read current poll interval:
-  - `scripts/run_monitor.sh poll get`
-- Update poll interval:
-  - `scripts/run_monitor.sh poll set --seconds 60`
-
-The running monitor service will reload the new interval on the next polling cycle.
-
-## Manage targets (CRUD)
+## Manage targets
 
 Use `scripts/run_monitor.sh targets ...` to manage `config.json -> targets`.
 
-- List targets:
-  - `scripts/run_monitor.sh targets list`
-- Read one target:
-  - `scripts/run_monitor.sh targets get --index 1`
-  - `scripts/run_monitor.sh targets get --name "春意寻味双人餐"`
-  - `scripts/run_monitor.sh targets get --url "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1682152928"`
-  - `scripts/run_monitor.sh targets get --activity-id 1682152928`
-- Add target:
-  - `scripts/run_monitor.sh targets add --name "春意寻味双人餐" --url "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1682152928&shareid=xxx"`
-- Update target:
-  - `scripts/run_monitor.sh targets update --index 1 --set-name "春意寻味双人餐(东湖)"`
-  - `scripts/run_monitor.sh targets update --activity-id 1682152928 --set-url "https://...activityid=1682152928&shareid=..."`
-- Delete target:
-  - `scripts/run_monitor.sh targets remove --index 1`
-  - `scripts/run_monitor.sh targets remove --name "春意寻味双人餐"`
-  - `scripts/run_monitor.sh targets remove --url "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1682152928"`
-  - `scripts/run_monitor.sh targets remove --activity-id 1682152928`
+Supported selectors:
+- `index`
+- `name`
+- `url`
+- `activity_id`
 
-Use `--json` on any target command to return machine-readable output.
+Add/update can also set `group_key` so each target routes notifications to the correct Feishu webhook group.
+
+## Manage Feishu groups
+
+Use `scripts/run_monitor.sh groups ...` to manage `config.json -> notify.feishu_groups`.
+
+Supported operations:
+- `groups list`
+- `groups add`
+- `groups update`
+- `groups remove`
+
+When the user changes a target's `group_key`, the running monitor reloads it automatically on the next polling cycle.
 
 ## Conversation mapping
 
-- If user says "有哪些命令 / 帮助 / help / 怎么用":
-  - Read [references/command-catalog.md](references/command-catalog.md)
-  - Answer with the grouped command list and one example per group
-- If user says "中文帮助 / 中文命令 / 我可以怎么指挥你 / 有哪些中文口令":
-  - Read [references/command-catalog-zh.md](references/command-catalog-zh.md)
-  - Answer in Chinese with grouped commands and example phrases
-- If user says "查看监控列表 / 列出套餐":
+- If user says `查看监控列表 / 列出套餐`:
   - Run `scripts/run_monitor.sh targets list --json`
-- If user says "新增监控"，输入格式是 `套餐名，链接`:
-  - Parse `name` and `url`
-  - Run `scripts/run_monitor.sh targets add --name "<name>" --url "<url>" --json`
-  - Stored URL must be the normalized URL with `shareid` removed
-- If user says "修改监控":
-  - Prefer selector priority: `index` -> `name` -> `url` -> `activity_id`
-  - Run `scripts/run_monitor.sh targets update --index "<n>" --set-name "<new_name>" --set-url "<new_url>" --json`
-- If user says "删除监控":
-  - Accept `序号 / 套餐名 / 链接 / activity_id`
-  - Run one of:
-    - `scripts/run_monitor.sh targets remove --index "<n>" --json`
-    - `scripts/run_monitor.sh targets remove --name "<name>" --json`
-    - `scripts/run_monitor.sh targets remove --url "<url>" --json`
-    - `scripts/run_monitor.sh targets remove --activity-id "<id>" --json`
-- If user says "查看轮询时间 / 当前刷新频率":
+- If user says `新增监控` and gives `套餐名，链接` or `套餐名，链接，分组key`:
+  - Run `scripts/run_monitor.sh targets add --name "<name>" --url "<url>" --group-key "<group_key>" --json`
+- If user says `修改监控分组`:
+  - Prefer `index` selector and run `scripts/run_monitor.sh targets update --index "<n>" --set-group-key "<group_key>" --json`
+- If user says `查看推送分组 / 添加推送分组 / 修改推送分组 / 删除推送分组`:
+  - Map to `scripts/run_monitor.sh groups ...`
+- If user says `查看轮询时间 / 当前刷新频率`:
   - Run `scripts/run_monitor.sh poll get --json`
-- If user says "修改轮询时间 / 修改刷新频率":
+- If user says `修改轮询时间 / 修改刷新频率`:
   - Run `scripts/run_monitor.sh poll set --seconds "<n>" --json`
+- If user says `启动管理 API`:
+  - Run `scripts/run_monitor.sh admin-api`
 - After any add/update/remove:
-  - Run `scripts/run_monitor.sh targets list --json` and show latest list back to user
-  - The running monitor service will reload `config.json` on the next polling cycle; restart is not required
-- After poll interval update:
-  - Run `scripts/run_monitor.sh poll get --json` and show latest interval back to user
-
-## Configure
-
-- Edit `config.json` before running:
-  - `targets`: managed by CRUD commands above
-  - `notify.feishu_webhook`: fill Feishu webhook
-  - `notify.email`: fill SMTP config if email is needed
+  - Run the matching `list` command and show latest state back to the user
 
 ## Deploy
 
-- For first-run deployment or install-time deployment handoff:
-  - Read [references/server-docker-deploy.md](references/server-docker-deploy.md)
-- Default deployment contract:
-  - monitor runs in Docker
-  - host `config.json` is mounted into container
-  - host `data/` is mounted into container
-  - target CRUD continues to operate on host `config.json`
-  - the monitor reloads `config.json` on the next polling cycle
-
-## Return format (recommended)
-
-- For target list, always include:
-  - `index | activityid | name | url`
-- For one-shot check, summarize each target in one line:
-  - `activityid | title | soldOut | state(有货/售罄) | timestamp`
-- For errors, include:
-  - failing target/activityid
-  - exact error message
-  - whether notify channels are configured
+Deployment contract is now:
+- `monitor.py` runs in Docker on the user's own server
+- `admin_api.py` runs in Docker on the user's own server
+- `web-admin/` is deployed to Cloudflare Pages
+- host `config.json` and host `data/` are the source of truth
+- target CRUD / group CRUD / poll changes hot reload into the running monitor
 
 ## Notes
 
-- `flow/api/trigger-webhook/...` is a Feishu Flow webhook, not group-bot webhook.
-- For direct group message delivery, prefer:
-  - `https://open.feishu.cn/open-apis/bot/v2/hook/...`
-- Stock notifications should only be sent when state becomes `IN_STOCK`.
-- Feishu in-stock notification should contain the package name and cleaned link.
+- `flow/api/trigger-webhook/...` is a Feishu Flow webhook, not a group-bot webhook.
+- For direct group message delivery, prefer `https://open.feishu.cn/open-apis/bot/v2/hook/...`
+- Stock notifications are sent only when state becomes `IN_STOCK`.
+- Feishu notification routing is based on `targets[].group_key`.

@@ -1,0 +1,19 @@
+services:
+  monitor:
+    build: .
+    image: dzdp-monitor:latest
+    command: ["python3", "monitor.py", "--config", "/app/config.json"]
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/app/config.json
+      - ./data:/app/data
+
+  admin-api:
+    image: dzdp-monitor:latest
+    command: ["python3", "admin_api.py", "--config", "/app/config.json"]
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./config.json:/app/config.json
+      - ./data:/app/data
