@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -23,6 +24,61 @@ DEFAULT_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1"
 )
+
+DEFAULT_UA_POOL = [
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; M2012K11AC) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+]
+
+
+def build_generated_ua_pool(max_size: int = 400) -> List[str]:
+    ios_versions = ["16_7", "17_0", "17_3", "17_6", "18_0", "18_1", "18_2"]
+    ios_safari = ["16.6", "17.0", "17.3", "17.6", "18.0", "18.1", "18.2"]
+    ios_devices = [
+        "iPhone",
+        "iPhone14,2",
+        "iPhone15,2",
+        "iPhone16,1",
+        "iPhone16,2",
+    ]
+
+    android_versions = ["11", "12", "13", "14", "15"]
+    android_models = [
+        "Pixel 6",
+        "Pixel 7",
+        "Pixel 8",
+        "SM-S9180",
+        "SM-S9280",
+        "M2012K11AC",
+        "V2307A",
+        "PJD110",
+    ]
+    chrome_majors = ["124", "125", "126", "127", "128", "129", "130", "131", "132", "133"]
+
+    uas: List[str] = []
+
+    for ios_ver, safari_ver, dev in itertools.product(ios_versions, ios_safari, ios_devices):
+        uas.append(
+            "Mozilla/5.0 "
+            f"({dev}; CPU iPhone OS {ios_ver} like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            f"Version/{safari_ver} Mobile/15E148 Safari/604.1"
+        )
+
+    for and_ver, model, chrome_major in itertools.product(android_versions, android_models, chrome_majors):
+        uas.append(
+            "Mozilla/5.0 "
+            f"(Linux; Android {and_ver}; {model}) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/{chrome_major}.0.0.0 Mobile Safari/537.36"
+        )
+
+    # 去重并限制数量，保证“几百种”但不无限增大内存
+    deduped = list(dict.fromkeys(uas))
+    random.shuffle(deduped)
+    return deduped[: max(50, int(max_size))]
 
 
 def now_local() -> str:
@@ -522,6 +578,7 @@ def run_cycle(
     notify_failures = bool(alerts_cfg.get("notify_failures", False))
 
     for idx, target in enumerate(targets):
+        session.headers["User-Agent"] = resolve_user_agent(config, session, target.activity_id)
         ok, data, err = fetch_product_brief(session, target.activity_id, timeout_seconds)
         if not ok:
             failure = store.record_failure(target, err)
@@ -579,10 +636,44 @@ def run_cycle(
             time.sleep(random.uniform(0, jitter_seconds))
 
 
+def resolve_user_agent(
+    config: Dict[str, Any],
+    session: requests.Session,
+    target_key: Optional[str] = None,
+) -> str:
+    headers = config.get("request_headers", {})
+    fixed_ua = headers.get("User-Agent", DEFAULT_UA)
+
+    ua_cfg = config.get("user_agent", {})
+    mode = str(ua_cfg.get("mode", "fixed")).strip().lower()
+    pool = [str(x).strip() for x in (ua_cfg.get("pool") or []) if str(x).strip()]
+    generated_pool_size = int(ua_cfg.get("generated_pool_size", 400))
+    generated_pool = build_generated_ua_pool(generated_pool_size)
+    candidates = list(dict.fromkeys((pool or DEFAULT_UA_POOL) + generated_pool))
+
+    if mode == "fixed":
+        return fixed_ua
+
+    if mode == "random_pool":
+        return random.choice(candidates)
+
+    if mode == "per_target_sticky":
+        sticky_map = getattr(session, "_ua_sticky_map", None)
+        if sticky_map is None:
+            sticky_map = {}
+            setattr(session, "_ua_sticky_map", sticky_map)
+        key = target_key or "__default__"
+        if key not in sticky_map:
+            sticky_map[key] = random.choice(candidates)
+        return sticky_map[key]
+
+    return fixed_ua
+
+
 def build_requests_session(config: Dict[str, Any]) -> requests.Session:
     sess = requests.Session()
     headers = config.get("request_headers", {})
-    ua = headers.get("User-Agent", DEFAULT_UA)
+    ua = resolve_user_agent(config, sess)
     default_headers = {
         "User-Agent": ua,
         "Accept": "application/json, text/plain, */*",
@@ -613,6 +704,19 @@ def main() -> int:
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),
         format="%(asctime)s | %(levelname)s | %(message)s",
+    )
+
+    ua_cfg = config.get("user_agent", {})
+    ua_mode = str(ua_cfg.get("mode", "fixed")).strip().lower()
+    ua_pool_size = len(ua_cfg.get("pool") or [])
+    generated_pool_size = int(ua_cfg.get("generated_pool_size", 400))
+    effective_pool_size = len(list(dict.fromkeys((ua_cfg.get("pool") or []) + build_generated_ua_pool(generated_pool_size))))
+    logging.info(
+        "UA mode=%s custom_pool=%s generated_pool=%s effective_pool=%s",
+        ua_mode,
+        ua_pool_size,
+        generated_pool_size,
+        effective_pool_size,
     )
 
     db_path = config.get("sqlite_path", "data/monitor_state.db")

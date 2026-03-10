@@ -2,20 +2,25 @@
   "log_level": "INFO",
   "sqlite_path": "data/monitor_state.db",
   "poll": {
-    "interval_seconds": 60,
+    "interval_seconds": 20,
+    "interval_jitter_seconds": 10,
     "timeout_seconds": 10,
-    "request_jitter_seconds": 3
+    "request_jitter_seconds": 3,
+    "proxy_enabled": false,
+    "proxy_list": []
   },
   "alerts": {
     "notify_on_states": [
       "IN_STOCK"
     ],
-    "notify_on_first_seen": true,
+    "notify_on_first_seen": false,
+    "notify_always": false,
     "failure_threshold": 3,
     "failure_repeat_every": 10
   },
   "notify": {
-    "feishu_webhook": "",
+    "push_via_cron": true,
+    "feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/dd4409f1-446d-4ee1-addd-8894eda4b714",
     "email": {
       "enabled": false,
       "smtp_host": "smtp.126.com",
@@ -33,14 +38,51 @@
   "request_headers": {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1"
   },
+  "user_agent": {
+    "mode": "per_target_sticky",
+    "generated_pool_size": 500,
+    "pool": [
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
+      "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+      "Mozilla/5.0 (Linux; Android 13; M2012K11AC) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
+    ]
+  },
   "targets": [
     {
-      "name": "春意寻味双人餐",
-      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1682152928&shareid=na9FADQlIH_1772629866784"
+      "name": "大众点评套餐 (544162508)",
+      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=544162508",
+      "activity_id": "544162508"
     },
     {
-      "name": "刘家蹄髈",
-      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1221425037&shareid=V9vLpdwZda_1772628220643"
+      "name": "VIP专属立减90元",
+      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1665618334",
+      "activity_id": "1665618334"
+    },
+    {
+      "name": "刘家猪蹄大王武汉29.9",
+      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1221425037",
+      "activity_id": "1221425037"
+    },
+    {
+      "name": "欢乐牧场上海VIP专属立减69.5元，超值3.6折",
+      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=2034720710",
+      "activity_id": "2034720710"
+    },
+    {
+      "name": "哈尔滨 市南自助VIP专属立减49.9元，超值4折",
+      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=949289968",
+      "activity_id": "949289968"
+    },
+    {
+      "name": "北京黑叔美式单人VIP专属立减87元，超值1.2折",
+      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=18963436",
+      "activity_id": "18963436"
+    },
+    {
+      "name": "⭐武汉 洪山区 疆上放羊郎·鲜活烧烤城(白沙洲店) VIP专属立减99元，超值4.9折",
+      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1194010870",
+      "activity_id": "1194010870"
     }
   ]
 }
