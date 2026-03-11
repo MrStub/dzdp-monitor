@@ -20,15 +20,48 @@ export function getDefaultBaseUrl() {
   return DEFAULT_BASE_URL;
 }
 
+export type ApiRequestErrorCode = "http_error" | "network_error" | "parse_error" | "unknown_error";
+
+type ApiRequestErrorOptions = {
+  code: ApiRequestErrorCode;
+  status?: number;
+};
+
+export class ApiRequestError extends Error {
+  code: ApiRequestErrorCode;
+
+  status?: number;
+
+  constructor(message: string, options: ApiRequestErrorOptions) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.code = options.code;
+    this.status = options.status;
+  }
+}
+
 function stripTrailingSlash(value: string) {
   return String(value || "").replace(/\/+$/, "");
 }
 
 async function parseResponse(response: Response) {
   const text = await response.text();
-  const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  let data: Record<string, unknown> = {};
+  if (text) {
+    try {
+      data = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      throw new ApiRequestError("服务返回了无法解析的数据，请稍后重试", {
+        code: "parse_error",
+        status: response.status,
+      });
+    }
+  }
   if (!response.ok) {
-    throw new Error(String(data.error || `HTTP ${response.status}`));
+    throw new ApiRequestError(String(data.error || `HTTP ${response.status}`), {
+      code: "http_error",
+      status: response.status,
+    });
   }
   return data;
 }
@@ -47,10 +80,22 @@ export async function apiRequest(
     headers.set("Authorization", `Bearer ${token.trim()}`);
   }
 
-  const response = await fetch(`${stripTrailingSlash(baseUrl)}${path}`, {
-    ...options,
-    headers,
-  });
-
-  return parseResponse(response);
+  try {
+    const response = await fetch(`${stripTrailingSlash(baseUrl)}${path}`, {
+      ...options,
+      headers,
+    });
+    return parseResponse(response);
+  } catch (error) {
+    if (error instanceof ApiRequestError) {
+      throw error;
+    }
+    if (error instanceof TypeError) {
+      throw new ApiRequestError("网络请求失败", { code: "network_error" });
+    }
+    throw new ApiRequestError(
+      error instanceof Error ? error.message : "请求失败",
+      { code: "unknown_error" },
+    );
+  }
 }

@@ -13,7 +13,7 @@ import {
   UserCog,
   Waves,
 } from "lucide-react";
-import { apiRequest, getDefaultBaseUrl } from "@/lib/api";
+import { ApiRequestError, apiRequest, getDefaultBaseUrl } from "@/lib/api";
 import type {
   AuthMeResponse,
   AuthUser,
@@ -93,6 +93,7 @@ type Notice = {
 
 type LoadingState = {
   dashboard: boolean;
+  loginSubmit: boolean;
   targetSubmit: boolean;
   groupSubmit: boolean;
   pollSubmit: boolean;
@@ -301,6 +302,50 @@ function parseJsonField(label: string, text: string) {
   }
 }
 
+type LoginFailure = {
+  noticeMessage: string;
+  inlineMessage: string;
+  field?: "password";
+};
+
+function resolveLoginFailure(error: unknown): LoginFailure {
+  if (error instanceof ApiRequestError) {
+    if (error.status === 401) {
+      return {
+        noticeMessage: "账号或密码错误，请重新输入后再试",
+        inlineMessage: "账号或密码错误，请检查后重试。",
+        field: "password",
+      };
+    }
+    if (error.code === "network_error") {
+      if (typeof navigator !== "undefined" && navigator.onLine === false) {
+        return {
+          noticeMessage: "网络连接失败，请检查本地网络后重试",
+          inlineMessage: "网络连接失败，请确认网络可用后再试。",
+        };
+      }
+      return {
+        noticeMessage: "服务不可达，请确认服务已启动并稍后重试",
+        inlineMessage: "当前无法连接服务，请稍后重试。",
+      };
+    }
+    if (typeof error.status === "number" && error.status >= 500) {
+      return {
+        noticeMessage: "服务不可达，请稍后重试",
+        inlineMessage: "服务暂时不可用，请稍后重试。",
+      };
+    }
+    return {
+      noticeMessage: error.message || "登录失败，请稍后重试",
+      inlineMessage: error.message || "登录失败，请稍后重试。",
+    };
+  }
+  return {
+    noticeMessage: error instanceof Error ? error.message : "登录失败，请稍后重试",
+    inlineMessage: "登录失败，请稍后重试。",
+  };
+}
+
 function DataField({
   label,
   hint,
@@ -311,8 +356,8 @@ function DataField({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid gap-2.5">
-      <Label className="leading-none">{label}</Label>
+    <div className="grid gap-3">
+      <Label className="leading-5">{label}</Label>
       {children}
       {hint ? <p className="text-xs leading-5 text-muted-foreground">{hint}</p> : null}
     </div>
@@ -329,6 +374,7 @@ export default function App() {
   const [notice, setNotice] = useState<Notice>({ type: "success", message: "" });
   const [loading, setLoading] = useState<LoadingState>({
     dashboard: false,
+    loginSubmit: false,
     targetSubmit: false,
     groupSubmit: false,
     pollSubmit: false,
@@ -346,6 +392,9 @@ export default function App() {
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [loginUsername, setLoginUsername] = useState("admin");
   const [loginPassword, setLoginPassword] = useState("");
+  const [loginFormError, setLoginFormError] = useState("");
+  const [loginUsernameError, setLoginUsernameError] = useState("");
+  const [loginPasswordError, setLoginPasswordError] = useState("");
   const [permissionUserId, setPermissionUserId] = useState("");
   const [newUserName, setNewUserName] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
@@ -495,15 +544,28 @@ export default function App() {
 
   async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!loginUsername.trim() || !loginPassword) {
-      pushNotice("error", "请输入用户名和密码");
+    if (loading.loginSubmit) {
       return;
     }
+    const username = loginUsername.trim();
+    const missingUsername = !username;
+    const missingPassword = !loginPassword;
+    if (missingUsername || missingPassword) {
+      setLoginFormError("请先完整填写账号和密码。");
+      setLoginUsernameError(missingUsername ? "请输入账号" : "");
+      setLoginPasswordError(missingPassword ? "请输入密码" : "");
+      pushNotice("error", "请先完整填写账号和密码");
+      return;
+    }
+    setLoginFormError("");
+    setLoginUsernameError("");
+    setLoginPasswordError("");
+    setLoading((current) => ({ ...current, loginSubmit: true }));
     try {
       const payload = (await apiRequest(apiBaseUrl, "", "/api/auth/login", {
         method: "POST",
         body: JSON.stringify({
-          username: loginUsername.trim(),
+          username,
           password: loginPassword,
         }),
       })) as { token: string; user: AuthUser; permissions: UserPermissions };
@@ -511,13 +573,22 @@ export default function App() {
       setMe({ user: payload.user, permissions: payload.permissions });
       window.localStorage.setItem("dzdp_api_token", payload.token || "");
       setLoginPassword("");
+      setLoginFormError("");
+      setLoginUsernameError("");
+      setLoginPasswordError("");
       await loadDashboard(false);
       if (payload.user.is_admin) {
         await loadUsers(true);
       }
       pushNotice("success", `已登录：${payload.user.username}`);
     } catch (error) {
-      pushNotice("error", error instanceof Error ? error.message : "登录失败");
+      const failure = resolveLoginFailure(error);
+      setLoginFormError(failure.inlineMessage);
+      setLoginUsernameError("");
+      setLoginPasswordError(failure.field === "password" ? failure.inlineMessage : "");
+      pushNotice("error", failure.noticeMessage);
+    } finally {
+      setLoading((current) => ({ ...current, loginSubmit: false }));
     }
   }
 
@@ -878,63 +949,90 @@ export default function App() {
   }
 
   const navItems = NAV_ITEMS;
+  const visibleNavItems = useMemo(
+    () => navItems.filter((item) => hasNavAccess(item.permission)),
+    [navItems, canManagePermissions, currentPermissions],
+  );
 
-  const activeNavItem = navItems.find((item) => item.id === activeTab) ?? navItems[0];
+  const activeNavItem =
+    visibleNavItems.find((item) => item.id === activeTab) ?? visibleNavItems[0] ?? NAV_ITEMS[0];
 
   useEffect(() => {
-    const currentItem = navItems.find((item) => item.id === activeTab);
-    if (currentItem && hasNavAccess(currentItem.permission)) {
+    if (visibleNavItems.find((item) => item.id === activeTab)) {
       return;
     }
-    const fallback = navItems.find((item) => hasNavAccess(item.permission))?.id ?? "connection";
+    const fallback = visibleNavItems[0]?.id ?? "connection";
     setActiveTab(fallback);
-  }, [activeTab, canManagePermissions, currentPermissions]);
+  }, [activeTab, visibleNavItems]);
 
   if (!isLoggedIn) {
     return (
       <div className="app-shell glass-grid relative min-h-screen overflow-x-hidden">
         <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[radial-gradient(circle_at_top_right,rgba(244,115,74,0.22),transparent_45%)]" />
         <div className="pointer-events-none absolute bottom-0 left-0 h-72 w-72 rounded-full bg-[radial-gradient(circle,rgba(83,168,153,0.24),transparent_65%)] blur-3xl" />
-        <main className="container relative z-10 py-8">
+        {notice.message ? (
+          <div className="fixed right-4 top-4 z-50 w-[min(92vw,420px)]">
+            <div
+              className={cn(
+                "rounded-xl border px-4 py-3 text-sm shadow-lg backdrop-blur",
+                notice.type === "error"
+                  ? "border-rose-200 bg-rose-50/95 text-rose-800"
+                  : "border-emerald-200 bg-emerald-50/95 text-emerald-800",
+              )}
+            >
+              {notice.message}
+            </div>
+          </div>
+        ) : null}
+        <main className="container relative z-10 py-8 sm:py-10">
           <div className="mx-auto max-w-lg">
             <Card className="border-white/65 bg-white/88">
               <CardHeader>
                 <CardTitle>登录后台</CardTitle>
-                <CardDescription>
-                  使用服务端账号登录（API 地址由构建变量 `VITE_API_BASE_URL` 注入）。
-                </CardDescription>
+                <CardDescription>使用你的账号登录后台，继续管理监控和通知。</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {notice.message ? (
-                  <div
-                    className={cn(
-                      "rounded-xl border px-3 py-2 text-sm",
-                      notice.type === "error"
-                        ? "border-rose-200 bg-rose-50 text-rose-800"
-                        : "border-emerald-200 bg-emerald-50 text-emerald-800",
-                    )}
-                  >
-                    {notice.message}
-                  </div>
-                ) : null}
                 <form className="space-y-4" onSubmit={handleLogin}>
                   <DataField label="用户名">
                     <Input
                       value={loginUsername}
                       placeholder="admin"
-                      onChange={(event) => setLoginUsername(event.target.value)}
+                      className={loginUsernameError ? "border-rose-300 focus-visible:border-rose-400" : ""}
+                      onChange={(event) => {
+                        setLoginUsername(event.target.value);
+                        setLoginUsernameError("");
+                        setLoginFormError("");
+                      }}
                     />
+                    {loginUsernameError ? (
+                      <p className="text-xs text-rose-600">{loginUsernameError}</p>
+                    ) : null}
                   </DataField>
                   <DataField label="密码">
                     <Input
                       type="password"
                       value={loginPassword}
                       placeholder="请输入密码"
-                      onChange={(event) => setLoginPassword(event.target.value)}
+                      className={loginPasswordError ? "border-rose-300 focus-visible:border-rose-400" : ""}
+                      onChange={(event) => {
+                        setLoginPassword(event.target.value);
+                        setLoginPasswordError("");
+                        setLoginFormError("");
+                      }}
                     />
+                    {loginPasswordError ? (
+                      <p className="text-xs text-rose-600">{loginPasswordError}</p>
+                    ) : null}
                   </DataField>
+                  {loginFormError ? (
+                    <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                      {loginFormError}
+                    </div>
+                  ) : null}
                   <div className="flex gap-2">
-                    <Button type="submit">登录</Button>
+                    <Button type="submit" disabled={loading.loginSubmit}>
+                      {loading.loginSubmit ? "登录中..." : "登录"}
+                    </Button>
                   </div>
                 </form>
               </CardContent>
@@ -966,29 +1064,20 @@ export default function App() {
                   </div>
                 </CardHeader>
                 <CardContent className="grid gap-2">
-                  {navItems.map((item) => {
+                  {visibleNavItems.map((item) => {
                     const Icon = item.icon;
                     const active = item.id === activeTab;
-                    const allowed = hasNavAccess(item.permission);
                     return (
                       <button
                         key={item.id}
                         type="button"
-                        title={allowed ? item.hint : "当前账号无权限访问该模块"}
-                        onClick={() => {
-                          if (!allowed) {
-                            pushNotice("error", "当前账号无权限访问该模块");
-                            return;
-                          }
-                          setActiveTab(item.id);
-                        }}
-                        disabled={!allowed}
+                        title={item.hint}
+                        onClick={() => setActiveTab(item.id)}
                         className={cn(
                           "flex min-w-0 items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
                           active
                             ? "border-primary/30 bg-primary/10 text-foreground"
                             : "border-border/50 bg-secondary/35 text-muted-foreground hover:border-border/80 hover:bg-secondary/60 hover:text-foreground",
-                          !allowed && "cursor-not-allowed opacity-45",
                         )}
                       >
                         <Icon className="h-4 w-4 shrink-0" />
@@ -1006,34 +1095,25 @@ export default function App() {
             </div>
           </aside>
 
-          <section className="min-w-0 space-y-4 pb-8">
+          <section className="min-w-0 space-y-5 pb-8">
             <Card className="border-white/65 bg-white/82 lg:hidden">
-              <CardContent className="space-y-3 p-3">
+              <CardContent className="space-y-3 p-4">
                 <div className="text-sm font-medium">功能切换</div>
                 <div className="flex gap-2 overflow-x-auto pb-1">
-                  {navItems.map((item) => {
+                  {visibleNavItems.map((item) => {
                     const Icon = item.icon;
                     const active = item.id === activeTab;
-                    const allowed = hasNavAccess(item.permission);
                     return (
                       <button
                         key={item.id}
                         type="button"
-                        title={allowed ? item.hint : "当前账号无权限访问该模块"}
-                        onClick={() => {
-                          if (!allowed) {
-                            pushNotice("error", "当前账号无权限访问该模块");
-                            return;
-                          }
-                          setActiveTab(item.id);
-                        }}
-                        disabled={!allowed}
+                        title={item.hint}
+                        onClick={() => setActiveTab(item.id)}
                         className={cn(
                           "inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border px-3.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
                           active
                             ? "border-primary/35 bg-primary/10 text-foreground"
                             : "border-border/70 bg-background text-muted-foreground hover:border-border hover:bg-secondary/40",
-                          !allowed && "cursor-not-allowed opacity-45",
                         )}
                       >
                         <Icon className="h-4 w-4 shrink-0" />
@@ -1059,7 +1139,7 @@ export default function App() {
             ) : null}
 
             <Card className="border-white/65 bg-white/72">
-              <CardContent className="flex min-w-0 flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <CardContent className="flex min-w-0 flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
                 <div className="space-y-1">
                   <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
                     {activeNavItem.label}
@@ -1086,19 +1166,19 @@ export default function App() {
             </Card>
 
             {activeTab === "connection" ? (
-              <section className="grid gap-4">
-                <section className="grid gap-4 rounded-[2rem] border border-white/60 bg-hero p-4 shadow-panel sm:p-6 lg:grid-cols-2">
+              <section className="grid gap-5">
+                <section className="grid gap-5 rounded-[2rem] border border-white/60 bg-hero p-5 shadow-panel sm:p-6 lg:grid-cols-2">
                   <div className="space-y-4">
                     <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">连接设置</h1>
                     <p className="text-sm leading-7 text-muted-foreground">
-                      保留连接设置、套餐管理、分组管理、轮询设置和代理设置，前端仅重构为标准后台布局。
+                      在这里查看连接状态并管理访问凭证。
                     </p>
                     <div className="grid gap-3 sm:grid-cols-2">
                       {summaryCards.map((card) => {
                         const Icon = card.icon;
                         return (
                           <Card key={card.label} className="bg-white/78">
-                            <CardContent className="flex items-start justify-between p-4">
+                            <CardContent className="flex items-start justify-between p-5">
                               <div>
                                 <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
                                   {card.label}
@@ -1124,9 +1204,7 @@ export default function App() {
                         <Link2 className="h-5 w-5 text-primary" />
                         连接配置
                       </CardTitle>
-                      <CardDescription>
-                        API 地址由构建变量 `VITE_API_BASE_URL` 注入，此处仅管理 Bearer Token。
-                      </CardDescription>
+                      <CardDescription>管理登录凭证并检查连接状态。</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <DataField
@@ -1210,7 +1288,7 @@ export default function App() {
                       dashboard.targets.map((target) => (
                         <div
                           key={`${target.activity_id}-${target.index}`}
-                          className="rounded-[1.35rem] border border-border/70 bg-secondary/40 p-4"
+                          className="rounded-[1.35rem] border border-border/70 bg-secondary/40 p-5"
                         >
                           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                             <div className="space-y-1">
@@ -1292,9 +1370,7 @@ export default function App() {
                       Notify Routing
                     </div>
                     <CardTitle>通知分组</CardTitle>
-                    <CardDescription>
-                      套餐与分组绑定，默认分组和 webhook 都按后端现有协议写入。
-                    </CardDescription>
+                    <CardDescription>管理通知分组与 Webhook 绑定关系。</CardDescription>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-5">
@@ -1405,7 +1481,7 @@ export default function App() {
                     {dashboard.notify_groups.map((group) => (
                       <div
                         key={group.key}
-                        className="rounded-[1.35rem] border border-border/70 bg-secondary/40 p-4"
+                        className="rounded-[1.35rem] border border-border/70 bg-secondary/40 p-5"
                       >
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                           <div>
@@ -1463,9 +1539,7 @@ export default function App() {
                       Polling
                     </div>
                     <CardTitle>轮询配置</CardTitle>
-                    <CardDescription>
-                      写回 `/api/poll`，保持与当前 Python 热更新逻辑一致。
-                    </CardDescription>
+                    <CardDescription>调整轮询频率，控制刷新节奏。</CardDescription>
                   </div>
                 </CardHeader>
                 <CardContent>
@@ -1505,9 +1579,7 @@ export default function App() {
                       Proxy Pool
                     </div>
                     <CardTitle>代理设置</CardTitle>
-                    <CardDescription>
-                      保持 `generic_json` provider 协议不变，仅优化表单录入体验。
-                    </CardDescription>
+                    <CardDescription>管理代理池参数，保障请求稳定性。</CardDescription>
                   </div>
                 </CardHeader>
                 <CardContent>
@@ -1739,9 +1811,6 @@ export default function App() {
                       >
                         {loading.proxySubmit ? "保存中..." : "保存代理配置"}
                       </Button>
-                      <span className="text-sm text-muted-foreground">
-                        这一块仍是 provider 接入入口，只改前端体验。
-                      </span>
                     </div>
                   </form>
                 </CardContent>
@@ -1756,9 +1825,7 @@ export default function App() {
                       Access Control
                     </div>
                     <CardTitle>用户功能权限</CardTitle>
-                    <CardDescription>
-                      管理服务端用户与功能权限，接口：`/api/users*`。
-                    </CardDescription>
+                    <CardDescription>管理后台账号及功能访问权限。</CardDescription>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-5">
@@ -1807,7 +1874,7 @@ export default function App() {
                           ))}
                         </div>
                         {selectedPermissionUser ? (
-                          <div className="space-y-4 rounded-xl border border-border/70 bg-secondary/35 p-4">
+                          <div className="space-y-4 rounded-xl border border-border/70 bg-secondary/35 p-5">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div>
                                 <p className="text-sm font-semibold">{selectedPermissionUser.username}</p>
