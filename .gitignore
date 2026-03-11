@@ -2,3 +2,5 @@
 data/
 config.private.json
 *.log
+web-admin/node_modules/
+web-admin/dist/
