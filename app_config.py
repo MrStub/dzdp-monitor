@@ -144,18 +144,38 @@ def ensure_admin_api(config: Dict[str, Any]) -> Dict[str, Any]:
     admin_api = config.get("admin_api")
     if not isinstance(admin_api, dict):
         config["admin_api"] = {
-            "listen_host": "0.0.0.0",
+            "listen_host": "127.0.0.1",
             "listen_port": DEFAULT_ADMIN_API_PORT,
-            "cors_allowed_origins": ["*"],
+            "cors_allowed_origins": [],
             "auth_token": "",
+            "default_admin_username": "admin",
+            "default_admin_password": "",
+            "session_ttl_hours": 168,
+            "max_body_bytes": 1048576,
+            "login_rate_limit": {
+                "max_failures": 5,
+                "window_seconds": 600,
+                "block_seconds": 600,
+            },
         }
         admin_api = config["admin_api"]
-    admin_api.setdefault("listen_host", "0.0.0.0")
+    admin_api.setdefault("listen_host", "127.0.0.1")
     admin_api.setdefault("listen_port", DEFAULT_ADMIN_API_PORT)
     admin_api.setdefault("auth_token", "")
+    admin_api.setdefault("default_admin_username", "admin")
+    admin_api.setdefault("default_admin_password", "")
+    admin_api.setdefault("session_ttl_hours", 168)
+    admin_api.setdefault("max_body_bytes", 1048576)
+    rate_limit = admin_api.get("login_rate_limit")
+    if not isinstance(rate_limit, dict):
+        admin_api["login_rate_limit"] = {}
+        rate_limit = admin_api["login_rate_limit"]
+    rate_limit.setdefault("max_failures", 5)
+    rate_limit.setdefault("window_seconds", 600)
+    rate_limit.setdefault("block_seconds", 600)
     origins = admin_api.get("cors_allowed_origins")
     if not isinstance(origins, list):
-        admin_api["cors_allowed_origins"] = ["*"]
+        admin_api["cors_allowed_origins"] = []
     return admin_api
 
 
@@ -767,9 +787,9 @@ def update_proxy_config(config: Dict[str, Any], payload: Dict[str, Any]) -> Dict
 def get_admin_api_config_for_api(config: Dict[str, Any]) -> Dict[str, Any]:
     admin_api = ensure_admin_api(config)
     return {
-        "listen_host": str(admin_api.get("listen_host", "0.0.0.0")),
+        "listen_host": str(admin_api.get("listen_host", "127.0.0.1")),
         "listen_port": int(admin_api.get("listen_port", DEFAULT_ADMIN_API_PORT)),
-        "cors_allowed_origins": list(admin_api.get("cors_allowed_origins") or ["*"]),
+        "cors_allowed_origins": list(admin_api.get("cors_allowed_origins") or []),
         "auth_token_configured": bool(str(admin_api.get("auth_token", "")).strip()),
     }
 

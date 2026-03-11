@@ -68,3 +68,45 @@ export interface Dashboard {
   proxy: ProxyConfig;
   admin_api: AdminApiInfo;
 }
+
+export type PermissionKey =
+  | "targets_read"
+  | "targets_create"
+  | "targets_update"
+  | "targets_delete"
+  | "webhook_manage"
+  | "poll_manage"
+  | "proxy_manage";
+
+export type UserPermissions = Record<PermissionKey, boolean>;
+
+export interface AuthUser {
+  id: number | null;
+  username: string;
+  is_admin: boolean;
+}
+
+export interface AuthMeResponse {
+  user: AuthUser;
+  permissions: UserPermissions;
+  legacy_token?: boolean;
+}
+
+export interface AuthLoginResponse {
+  token: string;
+  token_type: string;
+  expires_at: string;
+  user: AuthUser;
+  permissions: UserPermissions;
+}
+
+export interface UserItem {
+  id: number;
+  username: string;
+  is_admin: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  last_login_at: string;
+  permissions: UserPermissions;
+}

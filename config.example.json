@@ -39,12 +39,19 @@
     }
   },
   "admin_api": {
-    "listen_host": "0.0.0.0",
+    "listen_host": "127.0.0.1",
     "listen_port": 8787,
-    "cors_allowed_origins": [
-      "https://your-cloudflare-pages.pages.dev"
-    ],
-    "auth_token": "replace-with-your-own-token"
+    "cors_allowed_origins": [],
+    "auth_token": "replace-with-your-own-token",
+    "default_admin_username": "admin",
+    "default_admin_password": "",
+    "session_ttl_hours": 168,
+    "max_body_bytes": 1048576,
+    "login_rate_limit": {
+      "max_failures": 5,
+      "window_seconds": 600,
+      "block_seconds": 600
+    }
   },
   "proxy": {
     "enabled": false,

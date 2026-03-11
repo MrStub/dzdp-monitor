@@ -15,11 +15,16 @@ import {
 } from "lucide-react";
 import { apiRequest, getDefaultBaseUrl } from "@/lib/api";
 import type {
+  AuthMeResponse,
+  AuthUser,
   Dashboard,
   NoticeType,
   NotifyGroup,
+  PermissionKey,
   ProxyConfig,
   TargetItem,
+  UserItem,
+  UserPermissions,
 } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -138,22 +143,6 @@ const PERMISSION_KEYS = [
   "proxy_manage",
 ] as const;
 
-type PermissionKey = (typeof PERMISSION_KEYS)[number];
-
-type UserPermissions = Record<PermissionKey, boolean>;
-
-type MockUser = {
-  id: string;
-  name: string;
-  is_admin: boolean;
-  permissions: UserPermissions;
-};
-
-type AuthSession = {
-  is_logged_in: boolean;
-  user_id: string;
-};
-
 type NavPermission = PermissionKey | "admin_only";
 
 type NavItem = {
@@ -174,16 +163,6 @@ const PERMISSION_LABELS: Record<PermissionKey, string> = {
   proxy_manage: "管理代理配置",
 };
 
-const ALL_PERMISSIONS: UserPermissions = {
-  targets_read: true,
-  targets_create: true,
-  targets_update: true,
-  targets_delete: true,
-  webhook_manage: true,
-  poll_manage: true,
-  proxy_manage: true,
-};
-
 const DEFAULT_OPERATOR_PERMISSIONS: UserPermissions = {
   targets_read: true,
   targets_create: true,
@@ -202,7 +181,7 @@ const NAV_ITEMS: NavItem[] = [
     hint: "套餐增删改查",
     permission: "targets_read",
   },
-  { id: "connection", label: "连接设置", icon: Link2, hint: "API 地址与鉴权" },
+  { id: "connection", label: "连接设置", icon: Link2, hint: "鉴权与连接状态" },
   {
     id: "groups",
     label: "通知分组",
@@ -237,18 +216,6 @@ function getLocalValue(key: string, fallback: string) {
   return window.localStorage.getItem(key) ?? fallback;
 }
 
-function getLocalJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) {
-      return fallback;
-    }
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
-}
-
 function normalizePermissions(raw: unknown, fallback: UserPermissions): UserPermissions {
   const source = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
   return {
@@ -262,91 +229,6 @@ function normalizePermissions(raw: unknown, fallback: UserPermissions): UserPerm
   };
 }
 
-function defaultUsers(): MockUser[] {
-  return [
-    {
-      id: "admin",
-      name: "管理员",
-      is_admin: true,
-      permissions: { ...ALL_PERMISSIONS },
-    },
-    {
-      id: "operator",
-      name: "运营同学",
-      is_admin: false,
-      permissions: { ...DEFAULT_OPERATOR_PERMISSIONS },
-    },
-  ];
-}
-
-function normalizeUsers(raw: unknown): MockUser[] {
-  if (!Array.isArray(raw)) {
-    return defaultUsers();
-  }
-
-  const normalized: MockUser[] = [];
-  const ids = new Set<string>();
-  for (const item of raw) {
-    if (!item || typeof item !== "object") {
-      continue;
-    }
-    const row = item as Record<string, unknown>;
-    const id = String(row.id || "").trim();
-    if (!id || ids.has(id)) {
-      continue;
-    }
-    ids.add(id);
-    const isAdmin = Boolean(row.is_admin);
-    normalized.push({
-      id,
-      name: String(row.name || id),
-      is_admin: isAdmin,
-      permissions: isAdmin
-        ? { ...ALL_PERMISSIONS }
-        : normalizePermissions(row.permissions, DEFAULT_OPERATOR_PERMISSIONS),
-    });
-  }
-
-  if (!normalized.find((user) => user.id === "admin")) {
-    normalized.unshift({
-      id: "admin",
-      name: "管理员",
-      is_admin: true,
-      permissions: { ...ALL_PERMISSIONS },
-    });
-  }
-  if (!normalized.length) {
-    return defaultUsers();
-  }
-  return normalized;
-}
-
-function normalizeAuthSession(raw: unknown): AuthSession {
-  if (!raw || typeof raw !== "object") {
-    return { is_logged_in: true, user_id: "admin" };
-  }
-  const source = raw as Record<string, unknown>;
-  const userId = String(source.user_id || "admin");
-  return {
-    is_logged_in: Boolean(source.is_logged_in ?? true),
-    user_id: userId || "admin",
-  };
-}
-
-function createUserId(name: string, existing: Set<string>) {
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  const base = slug || "user";
-  let candidate = base;
-  let idx = 2;
-  while (existing.has(candidate)) {
-    candidate = `${base}_${idx}`;
-    idx += 1;
-  }
-  return candidate;
-}
 
 function createTargetForm(groupKey = ""): TargetForm {
   return { name: "", url: "", group_key: groupKey };
@@ -438,9 +320,7 @@ function DataField({
 }
 
 export default function App() {
-  const [apiBaseUrl, setApiBaseUrl] = useState(() =>
-    getLocalValue("dzdp_api_base_url", getDefaultBaseUrl()),
-  );
+  const apiBaseUrl = getDefaultBaseUrl();
   const [authToken, setAuthToken] = useState(() =>
     getLocalValue("dzdp_api_token", ""),
   );
@@ -462,32 +342,26 @@ export default function App() {
   const [targetForm, setTargetForm] = useState<TargetForm>(() => createTargetForm());
   const [groupForm, setGroupForm] = useState<GroupForm>(createGroupForm);
   const [proxyForm, setProxyForm] = useState<ProxyForm>(createProxyForm);
-  const [users, setUsers] = useState<MockUser[]>(() =>
-    normalizeUsers(getLocalJson("dzdp_mock_users", defaultUsers())),
-  );
-  const [authSession, setAuthSession] = useState<AuthSession>(() =>
-    normalizeAuthSession(getLocalJson("dzdp_mock_auth_session", { is_logged_in: true, user_id: "admin" })),
-  );
-  const [loginUserId, setLoginUserId] = useState("admin");
-  const [permissionUserId, setPermissionUserId] = useState("admin");
+  const [users, setUsers] = useState<UserItem[]>([]);
+  const [me, setMe] = useState<AuthMeResponse | null>(null);
+  const [loginUsername, setLoginUsername] = useState("admin");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [permissionUserId, setPermissionUserId] = useState("");
   const [newUserName, setNewUserName] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
 
-  const currentUser = useMemo(() => {
-    return users.find((user) => user.id === authSession.user_id) ?? users[0];
-  }, [users, authSession.user_id]);
+  const isLoggedIn = Boolean(authToken.trim() && me);
+  const currentUser = useMemo<AuthUser | null>(() => me?.user ?? null, [me]);
 
   const currentPermissions = useMemo<UserPermissions>(() => {
-    if (!currentUser) {
-      return { ...ALL_PERMISSIONS };
+    if (!me) {
+      return { ...DEFAULT_OPERATOR_PERMISSIONS };
     }
-    if (currentUser.is_admin) {
-      return { ...ALL_PERMISSIONS };
-    }
-    return normalizePermissions(currentUser.permissions, DEFAULT_OPERATOR_PERMISSIONS);
-  }, [currentUser]);
+    return normalizePermissions(me.permissions, DEFAULT_OPERATOR_PERMISSIONS);
+  }, [me]);
 
   const selectedPermissionUser = useMemo(
-    () => users.find((user) => user.id === permissionUserId) ?? users[0],
+    () => users.find((user) => String(user.id) === permissionUserId) ?? users[0],
     [users, permissionUserId],
   );
 
@@ -501,32 +375,29 @@ export default function App() {
   const canProxyManage = currentPermissions.proxy_manage;
 
   useEffect(() => {
-    window.localStorage.setItem("dzdp_mock_users", JSON.stringify(users));
-  }, [users]);
-
-  useEffect(() => {
-    window.localStorage.setItem("dzdp_mock_auth_session", JSON.stringify(authSession));
-  }, [authSession]);
-
-  useEffect(() => {
-    if (!users.find((user) => user.id === authSession.user_id)) {
-      setAuthSession((current) => ({ ...current, user_id: "admin" }));
-    }
-    if (!users.find((user) => user.id === loginUserId)) {
-      setLoginUserId("admin");
-    }
-    if (!users.find((user) => user.id === permissionUserId)) {
-      setPermissionUserId("admin");
-    }
-  }, [users, authSession.user_id, loginUserId, permissionUserId]);
-
-  useEffect(() => {
-    if (authSession.is_logged_in) {
-      void loadDashboard();
+    if (authToken.trim()) {
+      void bootstrapSession(false);
       return;
     }
+    setMe(null);
     setDashboardReady(false);
-  }, [authSession.is_logged_in]);
+  }, [authToken, apiBaseUrl]);
+
+  useEffect(() => {
+    if (canManagePermissions && isLoggedIn) {
+      void loadUsers();
+    }
+  }, [canManagePermissions, isLoggedIn]);
+
+  useEffect(() => {
+    if (!users.length) {
+      setPermissionUserId("");
+      return;
+    }
+    if (!users.find((item) => String(item.id) === permissionUserId)) {
+      setPermissionUserId(String(users[0].id));
+    }
+  }, [users, permissionUserId]);
 
   useEffect(() => {
     if (!notice.message) {
@@ -537,6 +408,10 @@ export default function App() {
     }, 4000);
     return () => window.clearTimeout(timer);
   }, [notice.message]);
+
+  useEffect(() => {
+    window.localStorage.removeItem("dzdp_api_base_url");
+  }, []);
 
   const summaryCards = useMemo(
     () => [
@@ -594,89 +469,161 @@ export default function App() {
     return false;
   }
 
-  function handleLogin() {
-    const user = users.find((item) => item.id === loginUserId) ?? users[0];
-    if (!user) {
-      pushNotice("error", "没有可用用户，请先在 localStorage 恢复默认配置");
+  async function loadMe() {
+    const payload = await request<AuthMeResponse>("/api/auth/me");
+    setMe(payload);
+    return payload;
+  }
+
+  async function bootstrapSession(withNotice: boolean) {
+    try {
+      const payload = await loadMe();
+      await loadDashboard(false);
+      if (withNotice) {
+        pushNotice("success", `已登录：${payload.user.username}`);
+      }
+    } catch (error) {
+      setMe(null);
+      setDashboardReady(false);
+      setUsers([]);
+      const message = error instanceof Error ? error.message : "认证失效";
+      pushNotice("error", message);
+      setAuthToken("");
+      window.localStorage.removeItem("dzdp_api_token");
+    }
+  }
+
+  async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!loginUsername.trim() || !loginPassword) {
+      pushNotice("error", "请输入用户名和密码");
       return;
     }
-    setAuthSession({ is_logged_in: true, user_id: user.id });
-    setPermissionUserId(user.id);
-    pushNotice("success", `已登录：${user.name}`);
+    try {
+      const payload = (await apiRequest(apiBaseUrl, "", "/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({
+          username: loginUsername.trim(),
+          password: loginPassword,
+        }),
+      })) as { token: string; user: AuthUser; permissions: UserPermissions };
+      setAuthToken(payload.token || "");
+      setMe({ user: payload.user, permissions: payload.permissions });
+      window.localStorage.setItem("dzdp_api_token", payload.token || "");
+      setLoginPassword("");
+      await loadDashboard(false);
+      if (payload.user.is_admin) {
+        await loadUsers(true);
+      }
+      pushNotice("success", `已登录：${payload.user.username}`);
+    } catch (error) {
+      pushNotice("error", error instanceof Error ? error.message : "登录失败");
+    }
   }
 
-  function handleLogout() {
-    setAuthSession((current) => ({ ...current, is_logged_in: false }));
-    setShowAddTargetModal(false);
-    setEditingTarget(null);
-    pushNotice("success", "已退出登录");
+  async function handleLogout() {
+    try {
+      if (authToken.trim()) {
+        await request("/api/auth/logout", { method: "POST" });
+      }
+    } catch {
+      // ignore logout API errors to keep local sign-out deterministic
+    } finally {
+      setAuthToken("");
+      setMe(null);
+      setUsers([]);
+      setShowAddTargetModal(false);
+      setEditingTarget(null);
+      window.localStorage.removeItem("dzdp_api_token");
+      pushNotice("success", "已退出登录");
+    }
   }
 
-  function updateUserPermission(userId: string, key: PermissionKey, enabled: boolean) {
-    setUsers((current) =>
-      current.map((user) => {
-        if (user.id !== userId || user.is_admin) {
-          return user;
-        }
-        return {
-          ...user,
-          permissions: {
-            ...user.permissions,
-            [key]: enabled,
-          },
-        };
-      }),
-    );
+  async function loadUsers(force = false) {
+    if (!force && !canManagePermissions) {
+      return;
+    }
+    try {
+      const payload = (await request<{ items: UserItem[] }>("/api/users")) as { items: UserItem[] };
+      setUsers(payload.items || []);
+    } catch (error) {
+      pushNotice("error", error instanceof Error ? error.message : "加载用户失败");
+    }
   }
 
-  function addMockUser(event: React.FormEvent<HTMLFormElement>) {
+  async function updateUserPermission(user: UserItem, key: PermissionKey, enabled: boolean) {
+    if (user.is_admin) {
+      return;
+    }
+    const nextPermissions = {
+      ...normalizePermissions(user.permissions, DEFAULT_OPERATOR_PERMISSIONS),
+      [key]: enabled,
+    };
+    try {
+      await request(`/api/users/${user.id}/permissions`, {
+        method: "PATCH",
+        body: JSON.stringify({ permissions: nextPermissions }),
+      });
+        await loadUsers(true);
+      await bootstrapSession(false);
+      pushNotice("success", "权限已更新");
+    } catch (error) {
+      pushNotice("error", error instanceof Error ? error.message : "更新权限失败");
+    }
+  }
+
+  async function addUser(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canManagePermissions) {
       pushNotice("error", "仅管理员可新增用户");
       return;
     }
-    const name = newUserName.trim();
-    if (!name) {
+    const username = newUserName.trim();
+    if (!username) {
       pushNotice("error", "请先输入用户名");
       return;
     }
-    setUsers((current) => {
-      const ids = new Set(current.map((user) => user.id));
-      const id = createUserId(name, ids);
-      const next = [
-        ...current,
-        {
-          id,
-          name,
+    try {
+      const payload = (await request<{
+        action: string;
+        user: UserItem;
+        generated_password?: string;
+      }>("/api/users", {
+        method: "POST",
+        body: JSON.stringify({
+          username,
+          password: newUserPassword || undefined,
           is_admin: false,
-          permissions: { ...DEFAULT_OPERATOR_PERMISSIONS },
-        },
-      ];
-      setPermissionUserId(id);
-      setLoginUserId(id);
-      return next;
-    });
-    setNewUserName("");
-    pushNotice("success", `已新增用户：${name}`);
+        }),
+      })) as { generated_password?: string };
+      await loadUsers();
+      setNewUserName("");
+      setNewUserPassword("");
+      if (payload.generated_password) {
+        pushNotice("success", `用户已创建，系统密码：${payload.generated_password}`);
+      } else {
+        pushNotice("success", "用户已创建");
+      }
+    } catch (error) {
+      pushNotice("error", error instanceof Error ? error.message : "创建用户失败");
+    }
   }
 
-  function removeMockUser(user: MockUser) {
+  async function removeUser(user: UserItem) {
     if (!canManagePermissions) {
       pushNotice("error", "仅管理员可删除用户");
       return;
     }
-    if (user.is_admin || user.id === "admin") {
-      pushNotice("error", "管理员账号不可删除");
+    if (!window.confirm(`删除用户「${user.username}」？`)) {
       return;
     }
-    if (!window.confirm(`删除用户「${user.name}」？`)) {
-      return;
+    try {
+      await request(`/api/users/${user.id}`, { method: "DELETE" });
+      await loadUsers();
+      pushNotice("success", `已删除用户：${user.username}`);
+    } catch (error) {
+      pushNotice("error", error instanceof Error ? error.message : "删除用户失败");
     }
-    setUsers((current) => current.filter((item) => item.id !== user.id));
-    if (authSession.user_id === user.id) {
-      setAuthSession({ is_logged_in: true, user_id: "admin" });
-    }
-    pushNotice("success", `已删除用户：${user.name}`);
   }
 
   function applyDashboard(payload: Dashboard) {
@@ -692,12 +639,14 @@ export default function App() {
     setProxyForm(createProxyForm(payload.proxy));
   }
 
-  async function loadDashboard() {
+  async function loadDashboard(withNotice = true) {
     setLoading((current) => ({ ...current, dashboard: true }));
     try {
       const payload = await request<Dashboard>("/api/dashboard");
       applyDashboard(payload);
-      pushNotice("success", "面板已刷新");
+      if (withNotice) {
+        pushNotice("success", "面板已刷新");
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "加载面板失败";
       setDashboardReady(false);
@@ -708,9 +657,10 @@ export default function App() {
   }
 
   function saveConnection() {
-    window.localStorage.setItem("dzdp_api_base_url", apiBaseUrl);
     window.localStorage.setItem("dzdp_api_token", authToken);
-    void loadDashboard();
+    if (authToken.trim()) {
+      void bootstrapSession(false);
+    }
   }
 
   function openAddTargetModal() {
@@ -746,7 +696,11 @@ export default function App() {
       if (editingTarget) {
         await request(`/api/targets/${editingTarget.index}`, {
           method: "PATCH",
-          body: JSON.stringify(targetForm),
+          body: JSON.stringify({
+            set_name: targetForm.name,
+            set_url: targetForm.url,
+            set_group_key: targetForm.group_key,
+          }),
         });
         pushNotice("success", `已更新套餐 #${editingTarget.index}`);
       } else {
@@ -936,7 +890,7 @@ export default function App() {
     setActiveTab(fallback);
   }, [activeTab, canManagePermissions, currentPermissions]);
 
-  if (!authSession.is_logged_in) {
+  if (!isLoggedIn) {
     return (
       <div className="app-shell glass-grid relative min-h-screen overflow-x-hidden">
         <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[radial-gradient(circle_at_top_right,rgba(244,115,74,0.22),transparent_45%)]" />
@@ -946,21 +900,43 @@ export default function App() {
             <Card className="border-white/65 bg-white/88">
               <CardHeader>
                 <CardTitle>登录后台</CardTitle>
-                <CardDescription>纯前端 mock 登录，不调用后端鉴权接口。</CardDescription>
+                <CardDescription>
+                  使用服务端账号登录（API 地址由构建变量 `VITE_API_BASE_URL` 注入）。
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <DataField label="登录用户">
-                  <Select value={loginUserId} onChange={(event) => setLoginUserId(event.target.value)}>
-                    {users.map((user) => (
-                      <option key={user.id} value={user.id}>
-                        {user.name} ({user.id})
-                      </option>
-                    ))}
-                  </Select>
-                </DataField>
-                <div className="flex gap-2">
-                  <Button onClick={handleLogin}>登录（Mock）</Button>
-                </div>
+                {notice.message ? (
+                  <div
+                    className={cn(
+                      "rounded-xl border px-3 py-2 text-sm",
+                      notice.type === "error"
+                        ? "border-rose-200 bg-rose-50 text-rose-800"
+                        : "border-emerald-200 bg-emerald-50 text-emerald-800",
+                    )}
+                  >
+                    {notice.message}
+                  </div>
+                ) : null}
+                <form className="space-y-4" onSubmit={handleLogin}>
+                  <DataField label="用户名">
+                    <Input
+                      value={loginUsername}
+                      placeholder="admin"
+                      onChange={(event) => setLoginUsername(event.target.value)}
+                    />
+                  </DataField>
+                  <DataField label="密码">
+                    <Input
+                      type="password"
+                      value={loginPassword}
+                      placeholder="请输入密码"
+                      onChange={(event) => setLoginPassword(event.target.value)}
+                    />
+                  </DataField>
+                  <div className="flex gap-2">
+                    <Button type="submit">登录</Button>
+                  </div>
+                </form>
               </CardContent>
             </Card>
           </div>
@@ -1091,7 +1067,7 @@ export default function App() {
                   <p className="text-sm text-muted-foreground">{activeNavItem.hint}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="accent">{currentUser?.name || "未知用户"}</Badge>
+                  <Badge variant="accent">{currentUser?.username || "未知用户"}</Badge>
                   <Button
                     variant="secondary"
                     onClick={() => void loadDashboard()}
@@ -1149,17 +1125,10 @@ export default function App() {
                         连接配置
                       </CardTitle>
                       <CardDescription>
-                        API 地址与 Bearer Token 保存在浏览器 localStorage。
+                        API 地址由构建变量 `VITE_API_BASE_URL` 注入，此处仅管理 Bearer Token。
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                      <DataField label="API 地址">
-                        <Input
-                          value={apiBaseUrl}
-                          placeholder="https://api.example.com"
-                          onChange={(event) => setApiBaseUrl(event.target.value)}
-                        />
-                      </DataField>
                       <DataField
                         label="Bearer Token"
                         hint="服务端配置了 admin_api.auth_token 时必填。"
@@ -1788,7 +1757,7 @@ export default function App() {
                     </div>
                     <CardTitle>用户功能权限</CardTitle>
                     <CardDescription>
-                      管理前端 mock 用户及其功能权限，配置写入 localStorage。
+                      管理服务端用户与功能权限，接口：`/api/users*`。
                     </CardDescription>
                   </div>
                 </CardHeader>
@@ -1799,11 +1768,17 @@ export default function App() {
                     </div>
                   ) : (
                     <>
-                      <form className="flex flex-col gap-3 sm:flex-row" onSubmit={addMockUser}>
+                      <form className="grid gap-3 sm:grid-cols-3" onSubmit={addUser}>
                         <Input
                           value={newUserName}
-                          placeholder="新增普通用户，例如：客服同学"
+                          placeholder="新增普通用户，例如：operator01"
                           onChange={(event) => setNewUserName(event.target.value)}
+                        />
+                        <Input
+                          type="password"
+                          value={newUserPassword}
+                          placeholder="密码（可选，留空自动生成）"
+                          onChange={(event) => setNewUserPassword(event.target.value)}
                         />
                         <Button type="submit">新增用户</Button>
                       </form>
@@ -1813,16 +1788,16 @@ export default function App() {
                             <button
                               key={user.id}
                               type="button"
-                              onClick={() => setPermissionUserId(user.id)}
+                              onClick={() => setPermissionUserId(String(user.id))}
                               className={cn(
                                 "rounded-xl border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
-                                selectedPermissionUser?.id === user.id
+                                String(selectedPermissionUser?.id) === String(user.id)
                                   ? "border-primary/35 bg-primary/10"
                                   : "border-border/70 bg-secondary/40 hover:border-border hover:bg-secondary/55",
                               )}
                             >
                               <div className="flex items-center justify-between gap-2">
-                                <span className="font-medium">{user.name}</span>
+                                <span className="font-medium">{user.username}</span>
                                 <Badge variant={user.is_admin ? "accent" : "default"}>
                                   {user.is_admin ? "管理员" : "普通用户"}
                                 </Badge>
@@ -1835,7 +1810,7 @@ export default function App() {
                           <div className="space-y-4 rounded-xl border border-border/70 bg-secondary/35 p-4">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <div>
-                                <p className="text-sm font-semibold">{selectedPermissionUser.name}</p>
+                                <p className="text-sm font-semibold">{selectedPermissionUser.username}</p>
                                 <p className="text-xs text-muted-foreground">
                                   用户 ID：{selectedPermissionUser.id}
                                 </p>
@@ -1843,18 +1818,13 @@ export default function App() {
                               <div className="flex items-center gap-2">
                                 <Button
                                   type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => setLoginUserId(selectedPermissionUser.id)}
-                                >
-                                  设为登录默认
-                                </Button>
-                                <Button
-                                  type="button"
                                   variant="destructive"
                                   size="sm"
-                                  disabled={selectedPermissionUser.is_admin}
-                                  onClick={() => removeMockUser(selectedPermissionUser)}
+                                  disabled={
+                                    selectedPermissionUser.is_admin ||
+                                    selectedPermissionUser.id === currentUser?.id
+                                  }
+                                  onClick={() => void removeUser(selectedPermissionUser)}
                                 >
                                   删除用户
                                 </Button>
@@ -1875,7 +1845,7 @@ export default function App() {
                                         : Boolean(selectedPermissionUser.permissions[permission])
                                     }
                                     onCheckedChange={(checked) =>
-                                      updateUserPermission(selectedPermissionUser.id, permission, checked)
+                                      void updateUserPermission(selectedPermissionUser, permission, checked)
                                     }
                                   />
                                 </label>
