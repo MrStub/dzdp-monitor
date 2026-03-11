@@ -201,7 +201,7 @@ class AuthStore:
         legacy_auth_token: str,
     ):
         self.db_path = db_path
-        self.session_ttl_hours = max(1, int(session_ttl_hours or 168))
+        self.session_ttl_hours = max(1, int(session_ttl_hours or 1440))
         self.default_admin_username = str(default_admin_username or "admin").strip() or "admin"
         self.default_admin_password = str(default_admin_password or "").strip()
         self.legacy_auth_token = str(legacy_auth_token or "").strip()
@@ -784,7 +784,7 @@ class AdminApiHandler(BaseHTTPRequestHandler):
         admin_api = config.get("admin_api", {}) or {}
         return AuthStore(
             db_path=str(config.get("sqlite_path") or "data/monitor_state.db"),
-            session_ttl_hours=int(admin_api.get("session_ttl_hours", 168) or 168),
+            session_ttl_hours=int(admin_api.get("session_ttl_hours", 1440) or 1440),
             default_admin_username=str(admin_api.get("default_admin_username", "admin")),
             default_admin_password=str(admin_api.get("default_admin_password", "")),
             legacy_auth_token=str(admin_api.get("auth_token", "")),
@@ -988,6 +988,7 @@ class AdminApiHandler(BaseHTTPRequestHandler):
                 url=str(payload.get("url") or "").strip(),
                 name=payload.get("name"),
                 activity_id=payload.get("activity_id"),
+                group_keys_values=payload.get("group_keys"),
                 group_key_value=payload.get("group_key"),
                 upsert=bool(payload.get("upsert", False)),
             )
@@ -1017,6 +1018,7 @@ class AdminApiHandler(BaseHTTPRequestHandler):
                 set_name=payload.get("set_name"),
                 set_url=payload.get("set_url"),
                 new_activity_id=payload.get("new_activity_id"),
+                set_group_keys=payload.get("set_group_keys"),
                 set_group_key=payload.get("set_group_key"),
             )
             save_config(self.server.config_path, config)
@@ -1235,11 +1237,14 @@ class AdminApiHandler(BaseHTTPRequestHandler):
         group_lookup = {row["key"]: row["name"] for row in list_notify_groups(config)}
         enriched: List[Dict[str, Any]] = []
         for row in targets:
+            group_keys = list(row.get("group_keys") or [])
+            group_names = [group_lookup.get(key, key) for key in group_keys]
             state = states.get(str(row.get("activity_id") or ""), {})
             enriched.append(
                 {
                     **row,
-                    "group_name": group_lookup.get(row.get("group_key"), row.get("group_key")),
+                    "group_names": group_names,
+                    "group_name": group_names[0] if group_names else group_lookup.get(row.get("group_key"), row.get("group_key")),
                     "last_state": state.get("last_state") or "UNKNOWN",
                     "last_sold_out": state.get("last_sold_out"),
                     "last_title": state.get("last_title") or "",
@@ -1367,7 +1372,7 @@ def main() -> int:
         return 1
     auth_store = AuthStore(
         db_path=str(config.get("sqlite_path") or "data/monitor_state.db"),
-        session_ttl_hours=int(admin_api.get("session_ttl_hours", 168) or 168),
+        session_ttl_hours=int(admin_api.get("session_ttl_hours", 1440) or 1440),
         default_admin_username=str(admin_api.get("default_admin_username", "admin")),
         default_admin_password=str(admin_api.get("default_admin_password", "")),
         legacy_auth_token=str(admin_api.get("auth_token", "")),

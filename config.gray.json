@@ -127,6 +127,6 @@
     "auth_token": "",
     "default_admin_username": "admin",
     "default_admin_password": "Admin@123456",
-    "session_ttl_hours": 168
+    "session_ttl_hours": 1440
   }
 }

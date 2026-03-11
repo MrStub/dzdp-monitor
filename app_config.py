@@ -150,7 +150,7 @@ def ensure_admin_api(config: Dict[str, Any]) -> Dict[str, Any]:
             "auth_token": "",
             "default_admin_username": "admin",
             "default_admin_password": "",
-            "session_ttl_hours": 168,
+            "session_ttl_hours": 1440,
             "max_body_bytes": 1048576,
             "login_rate_limit": {
                 "max_failures": 5,
@@ -164,7 +164,7 @@ def ensure_admin_api(config: Dict[str, Any]) -> Dict[str, Any]:
     admin_api.setdefault("auth_token", "")
     admin_api.setdefault("default_admin_username", "admin")
     admin_api.setdefault("default_admin_password", "")
-    admin_api.setdefault("session_ttl_hours", 168)
+    admin_api.setdefault("session_ttl_hours", 1440)
     admin_api.setdefault("max_body_bytes", 1048576)
     rate_limit = admin_api.get("login_rate_limit")
     if not isinstance(rate_limit, dict):
@@ -301,16 +301,37 @@ def target_url(target: Dict[str, Any]) -> str:
     return normalize_url(str(target.get("url", "")))
 
 
+def _clean_group_key_list(values: List[Any]) -> List[str]:
+    normalized: List[str] = []
+    seen = set()
+    for value in values:
+        key = slugify_key(str(value or "").strip())
+        if not key or key in seen:
+            continue
+        normalized.append(key)
+        seen.add(key)
+    return normalized
+
+
+def target_group_keys(target: Dict[str, Any], config: Optional[Dict[str, Any]] = None) -> List[str]:
+    raw_values = target.get("group_keys")
+    normalized: List[str] = []
+    if isinstance(raw_values, list):
+        normalized = _clean_group_key_list(raw_values)
+    if not normalized:
+        legacy_raw = str(target.get("group_key") or target.get("notify_group_key") or "").strip()
+        if legacy_raw:
+            normalized = _clean_group_key_list([legacy_raw])
+    if normalized:
+        return normalized
+    if config is not None:
+        return [str(ensure_notify(config).get("default_group_key", DEFAULT_GROUP_KEY))]
+    return [DEFAULT_GROUP_KEY]
+
+
 
 def target_group_key(target: Dict[str, Any], config: Optional[Dict[str, Any]] = None) -> str:
-    raw = str(target.get("group_key") or target.get("notify_group_key") or "").strip()
-    if raw:
-        raw = slugify_key(raw) or raw
-    if raw:
-        return raw
-    if config is not None:
-        return str(ensure_notify(config).get("default_group_key", DEFAULT_GROUP_KEY))
-    return DEFAULT_GROUP_KEY
+    return target_group_keys(target, config)[0]
 
 
 
@@ -323,9 +344,13 @@ def normalize_targets_in_place(config: Dict[str, Any]) -> bool:
         normalized_name = target_name(target)
         normalized_url = target_url(target)
         normalized_activity_id = parse_activity_id(normalized_url, target.get("activity_id"))
-        normalized_group_key = target_group_key(target, config)
-        if normalized_group_key not in valid_group_keys:
-            normalized_group_key = default_group
+        normalized_group_keys = [
+            group_key_value
+            for group_key_value in target_group_keys(target, config)
+            if group_key_value in valid_group_keys
+        ]
+        if not normalized_group_keys:
+            normalized_group_keys = [default_group]
 
         if target.get("name") != normalized_name:
             target["name"] = normalized_name
@@ -336,10 +361,13 @@ def normalize_targets_in_place(config: Dict[str, Any]) -> bool:
         if normalized_activity_id and str(target.get("activity_id", "")).strip() != normalized_activity_id:
             target["activity_id"] = normalized_activity_id
             changed = True
-        if target.get("group_key") != normalized_group_key:
-            target["group_key"] = normalized_group_key
+        if target.get("group_keys") != normalized_group_keys:
+            target["group_keys"] = normalized_group_keys
             changed = True
-        if "notify_group_key" in target and target.get("notify_group_key") != normalized_group_key:
+        if "group_key" in target:
+            target.pop("group_key", None)
+            changed = True
+        if "notify_group_key" in target:
             target.pop("notify_group_key", None)
             changed = True
     return changed
@@ -364,13 +392,15 @@ def list_targets(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     normalize_config_in_place(config)
     rows = []
     for idx, target in enumerate(ensure_targets(config), start=1):
+        normalized_group_keys = target_group_keys(target, config)
         rows.append(
             {
                 "index": idx,
                 "activity_id": target_activity_id(target),
                 "name": target_name(target),
                 "url": target_url(target),
-                "group_key": target_group_key(target, config),
+                "group_keys": normalized_group_keys,
+                "group_key": normalized_group_keys[0],
             }
         )
     return rows
@@ -468,6 +498,30 @@ def ensure_group_exists(config: Dict[str, Any], group_key_value: Optional[str]) 
     return normalized
 
 
+def ensure_groups_exist(
+    config: Dict[str, Any],
+    group_keys_values: Optional[List[Any]] = None,
+    group_key_value: Optional[str] = None,
+) -> List[str]:
+    groups = ensure_feishu_groups(config)
+    valid_keys = {group["key"] for group in groups}
+    fallback_key = str(ensure_notify(config).get("default_group_key", DEFAULT_GROUP_KEY))
+    candidates: List[Any] = []
+    if isinstance(group_keys_values, list):
+        candidates.extend(group_keys_values)
+    elif group_keys_values is not None:
+        candidates.append(group_keys_values)
+    if not candidates and group_key_value is not None:
+        candidates.append(group_key_value)
+    normalized = _clean_group_key_list(candidates)
+    if not normalized:
+        normalized = [fallback_key]
+    for key in normalized:
+        if key not in valid_keys:
+            raise ConfigError(f"Unknown notify group: {key}")
+    return normalized
+
+
 
 def add_target(
     config: Dict[str, Any],
@@ -475,6 +529,7 @@ def add_target(
     url: str,
     name: Optional[str],
     activity_id: Optional[str],
+    group_keys_values: Optional[List[Any]],
     group_key_value: Optional[str],
     upsert: bool,
 ) -> Dict[str, Any]:
@@ -487,14 +542,14 @@ def add_target(
     final_name = str(name or f"target-{aid}").strip()
     if not final_name:
         raise ConfigError("Target name cannot be empty.")
-    final_group_key = ensure_group_exists(config, group_key_value)
+    final_group_keys = ensure_groups_exist(config, group_keys_values, group_key_value)
     idx = find_target_index(targets, aid)
     ensure_target_name_unique(targets, final_name, current_index=idx if idx >= 0 else None)
     new_obj = {
         "name": final_name,
         "url": normalized_url,
         "activity_id": aid,
-        "group_key": final_group_key,
+        "group_keys": final_group_keys,
     }
     if idx >= 0:
         if not upsert:
@@ -504,7 +559,14 @@ def add_target(
     else:
         targets.append(new_obj)
         action = "added"
-    return {"action": action, "target": new_obj, "total": len(targets)}
+    return {
+        "action": action,
+        "target": {
+            **new_obj,
+            "group_key": final_group_keys[0],
+        },
+        "total": len(targets),
+    }
 
 
 
@@ -518,6 +580,7 @@ def update_target(
     set_name: Optional[str],
     set_url: Optional[str],
     new_activity_id: Optional[str],
+    set_group_keys: Optional[List[Any]],
     set_group_key: Optional[str],
 ) -> Dict[str, Any]:
     normalize_config_in_place(config)
@@ -531,7 +594,7 @@ def update_target(
     )
     if idx < 0:
         raise ConfigError(err or "Target not found")
-    if set_name is None and set_url is None and new_activity_id is None and set_group_key is None:
+    if set_name is None and set_url is None and new_activity_id is None and set_group_keys is None and set_group_key is None:
         raise ConfigError("No update fields provided.")
 
     cur = dict(targets[idx])
@@ -553,8 +616,9 @@ def update_target(
         cur["name"] = final_name
     if set_url is not None:
         cur["url"] = final_url
-    if set_group_key is not None:
-        cur["group_key"] = ensure_group_exists(config, set_group_key)
+    if set_group_keys is not None or set_group_key is not None:
+        cur["group_keys"] = ensure_groups_exist(config, set_group_keys, set_group_key)
+        cur.pop("group_key", None)
     cur["activity_id"] = final_activity_id
     targets[idx] = cur
     return {
@@ -565,6 +629,7 @@ def update_target(
             "activity_id": target_activity_id(cur),
             "name": target_name(cur),
             "url": target_url(cur),
+            "group_keys": target_group_keys(cur, config),
             "group_key": target_group_key(cur, config),
         },
     }
@@ -598,6 +663,7 @@ def remove_target(
             "activity_id": target_activity_id(removed),
             "name": target_name(removed),
             "url": target_url(removed),
+            "group_keys": target_group_keys(removed, config),
             "group_key": target_group_key(removed, config),
         },
         "total": len(targets),
@@ -720,8 +786,15 @@ def remove_notify_group(config: Dict[str, Any], *, key_value: str) -> Dict[str, 
         notify["default_group_key"] = groups[0]["key"]
     reassigned_group_key = str(notify.get("default_group_key", groups[0]["key"]))
     for target in ensure_targets(config):
-        if target_group_key(target, config) == removed["key"]:
-            target["group_key"] = reassigned_group_key
+        current_keys = target_group_keys(target, config)
+        if removed["key"] not in current_keys:
+            continue
+        next_keys = [key for key in current_keys if key != removed["key"]]
+        if not next_keys:
+            next_keys = [reassigned_group_key]
+        target["group_keys"] = next_keys
+        target.pop("group_key", None)
+        target.pop("notify_group_key", None)
     return {
         "action": "removed",
         "group": {
@@ -796,16 +869,27 @@ def get_admin_api_config_for_api(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def resolve_target_feishu_webhook(config: Dict[str, Any], target: Dict[str, Any]) -> str:
+    webhooks = resolve_target_feishu_webhooks(config, target)
+    return webhooks[0] if webhooks else ""
+
+
+def resolve_target_feishu_webhooks(config: Dict[str, Any], target: Dict[str, Any]) -> List[str]:
     notify = ensure_notify(config)
     group_lookup = {group["key"]: group for group in ensure_feishu_groups(config)}
-    desired_group = target_group_key(target, config)
-    group = group_lookup.get(desired_group)
-    if group and group_webhook(group):
-        return group_webhook(group)
+    resolved: List[str] = []
+    seen = set()
+    for desired_group in target_group_keys(target, config):
+        group = group_lookup.get(desired_group)
+        webhook = group_webhook(group) if group else ""
+        if webhook and webhook not in seen:
+            resolved.append(webhook)
+            seen.add(webhook)
+    if resolved:
+        return resolved
     legacy = str(notify.get("feishu_webhook", "")).strip()
     if legacy:
-        return legacy
+        return [legacy]
     default_group = group_lookup.get(str(notify.get("default_group_key", DEFAULT_GROUP_KEY)))
-    if default_group:
-        return group_webhook(default_group)
-    return ""
+    if default_group and group_webhook(default_group):
+        return [group_webhook(default_group)]
+    return []

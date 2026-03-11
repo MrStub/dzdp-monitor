@@ -22,7 +22,7 @@ from app_config import (
     list_targets,
     load_config,
     normalize_config_in_place,
-    resolve_target_feishu_webhook,
+    resolve_target_feishu_webhooks,
 )
 from proxy_provider import ProxyResolutionError, ProxyResolver
 
@@ -120,14 +120,14 @@ class Target:
     name: str
     url: str
     activity_id: str
-    group_key: str
+    group_keys: List[str]
 
     def to_config_target(self) -> Dict[str, Any]:
         return {
             "name": self.name,
             "url": self.url,
             "activity_id": self.activity_id,
-            "group_key": self.group_key,
+            "group_keys": self.group_keys,
         }
 
 
@@ -384,14 +384,18 @@ def notify_channels(
     body: str,
     *,
     feishu_text: Optional[str] = None,
-    feishu_webhook: str = "",
+    feishu_webhooks: Optional[List[str]] = None,
 ) -> bool:
     notify_cfg = config.get("notify", {}) or {}
     any_sent = False
 
-    effective_webhook = str(feishu_webhook or "").strip()
-    if effective_webhook:
-        text = feishu_text if feishu_text is not None else f"{subject}\n{body}"
+    text = feishu_text if feishu_text is not None else f"{subject}\n{body}"
+    seen_webhooks = set()
+    for raw_webhook in feishu_webhooks or []:
+        effective_webhook = str(raw_webhook or "").strip()
+        if not effective_webhook or effective_webhook in seen_webhooks:
+            continue
+        seen_webhooks.add(effective_webhook)
         ok, detail = send_feishu(effective_webhook, text)
         if ok:
             logging.info("Feishu notification sent")
@@ -411,13 +415,13 @@ def notify_channels(
 
 
 def notify_target(config: Dict[str, Any], target: Target, subject: str, body: str) -> bool:
-    target_webhook = resolve_target_feishu_webhook(config, target.to_config_target())
+    target_webhooks = resolve_target_feishu_webhooks(config, target.to_config_target())
     return notify_channels(
         config,
         subject,
         body,
         feishu_text=body,
-        feishu_webhook=target_webhook,
+        feishu_webhooks=target_webhooks,
     )
 
 
@@ -446,6 +450,10 @@ def fetch_product_brief(
     return True, product, ""
 
 
+def format_target_groups(target: Target) -> str:
+    return ", ".join(target.group_keys) if target.group_keys else "default"
+
+
 def render_product_summary(target: Target, product: Dict[str, Any], state: str) -> str:
     sold_info = product.get("soldInfo") or {}
     price = product.get("priceInfo") or {}
@@ -455,7 +463,7 @@ def render_product_summary(target: Target, product: Dict[str, Any], state: str) 
     lines = [
         f"监控项: {target.name}",
         f"活动ID: {target.activity_id}",
-        f"通知分组: {target.group_key}",
+        f"通知分组: {format_target_groups(target)}",
         f"库存状态: {state_to_cn(state)}",
         f"套餐名称: {product.get('title') or '-'}",
         (
@@ -489,7 +497,7 @@ def render_in_stock_alert(target: Target, product: Dict[str, Any]) -> str:
     lines = [
         "检测到套餐有货",
         f"套餐名: {configured_name}",
-        f"通知分组: {target.group_key}",
+        f"通知分组: {format_target_groups(target)}",
     ]
     if api_title and api_title != configured_name:
         lines.append(f"接口名称: {api_title}")
@@ -505,7 +513,7 @@ def render_failure_alert(target: Target, error_text: str, error_streak: int) -> 
     lines = [
         "监控异常",
         f"监控项: {target.name}",
-        f"通知分组: {target.group_key}",
+        f"通知分组: {format_target_groups(target)}",
         f"链接: {target.url}",
         f"相同报错当日连续次数: {error_streak}",
         f"错误: {error_text}",
@@ -530,7 +538,7 @@ def build_targets(config: Dict[str, Any]) -> List[Target]:
                 name=str(row.get("name") or f"target-{activity_id}").strip(),
                 url=str(row.get("url") or "").strip(),
                 activity_id=activity_id,
-                group_key=str(row.get("group_key") or "default").strip(),
+                group_keys=[str(value).strip() for value in (row.get("group_keys") or []) if str(value).strip()],
             )
         )
     return targets
@@ -617,7 +625,7 @@ def run_cycle(
             changed=changed,
         )
 
-        logging.info("[%s] state=%s soldOut=%s title=%s group=%s", target.name, state, sold_out, title, target.group_key)
+        logging.info("[%s] state=%s soldOut=%s title=%s groups=%s", target.name, state, sold_out, title, format_target_groups(target))
 
         if changed:
             if old is None and not notify_on_first_seen:
@@ -671,7 +679,7 @@ def build_requests_session(config: Dict[str, Any]) -> requests.Session:
 
 
 def target_signature(targets: List[Target]) -> Tuple[Tuple[str, str, str, str], ...]:
-    return tuple((target.activity_id, target.name, target.url, target.group_key) for target in targets)
+    return tuple((target.activity_id, target.name, target.url, ",".join(target.group_keys)) for target in targets)
 
 
 def main() -> int:
@@ -732,7 +740,7 @@ def main() -> int:
             targets = build_targets(config)
             logging.info("Loaded %s targets", len(targets))
             for target in targets:
-                logging.info("Target: %s | activity_id=%s | group=%s", target.name, target.activity_id, target.group_key)
+                logging.info("Target: %s | activity_id=%s | groups=%s", target.name, target.activity_id, format_target_groups(target))
             session = build_requests_session(config)
             run_cycle(config, targets, store, session, proxy_resolver)
             session.close()
@@ -745,7 +753,7 @@ def main() -> int:
             if signature != last_signature:
                 logging.info("Reloaded %s targets from config", len(targets))
                 for target in targets:
-                    logging.info("Target: %s | activity_id=%s | group=%s", target.name, target.activity_id, target.group_key)
+                    logging.info("Target: %s | activity_id=%s | groups=%s", target.name, target.activity_id, format_target_groups(target))
                 last_signature = signature
 
             interval_seconds = get_interval_seconds(config)

@@ -13,7 +13,9 @@ export interface TargetItem {
   name: string;
   url: string;
   activity_id: string;
+  group_keys: string[];
   group_key: string;
+  group_names?: string[];
   group_name?: string;
   last_state: "IN_STOCK" | "SOLD_OUT" | "UNKNOWN" | string;
   last_sold_out?: boolean;

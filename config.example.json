@@ -45,7 +45,7 @@
     "auth_token": "replace-with-your-own-token",
     "default_admin_username": "admin",
     "default_admin_password": "",
-    "session_ttl_hours": 168,
+    "session_ttl_hours": 1440,
     "max_body_bytes": 1048576,
     "login_rate_limit": {
       "max_failures": 5,

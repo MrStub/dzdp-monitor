@@ -1,5 +1,5 @@
 const LOCAL_BASE_URL = "http://127.0.0.1:8787";
-const GRAY_BASE_URL = "http://127.0.0.1:18788";
+const ONLINE_BASE_URL = "https://monitor.mrstub.workers.dev";
 
 function resolveDefaultBaseUrl() {
   const fromEnv = String(import.meta.env.VITE_API_BASE_URL ?? "").trim();
@@ -11,7 +11,7 @@ function resolveDefaultBaseUrl() {
   if (hostname === "localhost" || hostname === "127.0.0.1") {
     return LOCAL_BASE_URL;
   }
-  return GRAY_BASE_URL;
+  return ONLINE_BASE_URL;
 }
 
 const DEFAULT_BASE_URL = resolveDefaultBaseUrl();

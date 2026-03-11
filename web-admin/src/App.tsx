@@ -7,7 +7,6 @@ import {
   Link2,
   LogOut,
   Plus,
-  RefreshCw,
   Settings2,
   ShieldCheck,
   UserCog,
@@ -103,7 +102,7 @@ type LoadingState = {
 type TargetForm = {
   name: string;
   url: string;
-  group_key: string;
+  group_keys: string[];
 };
 
 type GroupForm = {
@@ -155,13 +154,23 @@ type NavItem = {
 };
 
 const PERMISSION_LABELS: Record<PermissionKey, string> = {
-  targets_read: "查看监控列表",
-  targets_create: "新增监控项",
-  targets_update: "编辑监控项",
-  targets_delete: "删除监控项",
-  webhook_manage: "管理通知分组",
-  poll_manage: "管理轮询配置",
+  targets_read: "查看监控套餐",
+  targets_create: "新增监控套餐",
+  targets_update: "编辑监控套餐",
+  targets_delete: "删除监控套餐",
+  webhook_manage: "管理通知分组与通知地址",
+  poll_manage: "管理轮询频率",
   proxy_manage: "管理代理配置",
+};
+
+const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
+  targets_read: "允许查看监控套餐列表与详情。",
+  targets_create: "允许新增监控套餐配置。",
+  targets_update: "允许修改已有监控套餐配置。",
+  targets_delete: "允许删除现有监控套餐。",
+  webhook_manage: "允许维护通知分组以及对应的通知地址配置。",
+  poll_manage: "允许调整系统轮询频率。",
+  proxy_manage: "允许维护代理服务接入与请求参数配置。",
 };
 
 const DEFAULT_OPERATOR_PERMISSIONS: UserPermissions = {
@@ -187,7 +196,7 @@ const NAV_ITEMS: NavItem[] = [
     id: "groups",
     label: "通知分组",
     icon: Waves,
-    hint: "分组与 webhook",
+    hint: "分组与通知地址",
     permission: "webhook_manage",
   },
   {
@@ -213,8 +222,59 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
+const API_TOKEN_STORAGE_KEY = "dzdp_api_token";
+const REMEMBER_LOGIN_STORAGE_KEY = "dzdp_login_remember_v1";
+
 function getLocalValue(key: string, fallback: string) {
   return window.localStorage.getItem(key) ?? fallback;
+}
+
+function encodeBase64(text: string) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return window.btoa(binary);
+}
+
+function decodeBase64(text: string) {
+  const binary = window.atob(text);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function readRememberedLogin() {
+  const raw = window.localStorage.getItem(REMEMBER_LOGIN_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+  try {
+    const decoded = JSON.parse(decodeBase64(raw)) as Record<string, unknown>;
+    return {
+      username: String(decoded.username ?? ""),
+      password: String(decoded.password ?? ""),
+    };
+  } catch {
+    window.localStorage.removeItem(REMEMBER_LOGIN_STORAGE_KEY);
+    return null;
+  }
+}
+
+function persistRememberedLogin(enabled: boolean, username: string, password: string) {
+  if (!enabled) {
+    window.localStorage.removeItem(REMEMBER_LOGIN_STORAGE_KEY);
+    return;
+  }
+  window.localStorage.setItem(
+    REMEMBER_LOGIN_STORAGE_KEY,
+    encodeBase64(
+      JSON.stringify({
+        username,
+        password,
+      }),
+    ),
+  );
 }
 
 function normalizePermissions(raw: unknown, fallback: UserPermissions): UserPermissions {
@@ -231,8 +291,22 @@ function normalizePermissions(raw: unknown, fallback: UserPermissions): UserPerm
 }
 
 
-function createTargetForm(groupKey = ""): TargetForm {
-  return { name: "", url: "", group_key: groupKey };
+function createTargetForm(groupKeys: string[] = []): TargetForm {
+  return { name: "", url: "", group_keys: groupKeys };
+}
+
+function normalizeTargetGroupKeys(target: Pick<TargetItem, "group_keys" | "group_key">) {
+  if (Array.isArray(target.group_keys) && target.group_keys.length) {
+    return target.group_keys;
+  }
+  return target.group_key ? [target.group_key] : [];
+}
+
+function toggleTargetGroup(groupKeys: string[], groupKey: string, checked: boolean) {
+  if (checked) {
+    return groupKeys.includes(groupKey) ? groupKeys : [...groupKeys, groupKey];
+  }
+  return groupKeys.filter((value) => value !== groupKey);
 }
 
 function createGroupForm(): GroupForm {
@@ -325,8 +399,8 @@ function resolveLoginFailure(error: unknown): LoginFailure {
         };
       }
       return {
-        noticeMessage: "服务不可达，请确认服务已启动并稍后重试",
-        inlineMessage: "当前无法连接服务，请稍后重试。",
+        noticeMessage: "服务不可达，请检查网络或稍后重试",
+        inlineMessage: "当前无法连接服务，请检查网络后重试。",
       };
     }
     if (typeof error.status === "number" && error.status >= 500) {
@@ -366,11 +440,12 @@ function DataField({
 
 export default function App() {
   const apiBaseUrl = getDefaultBaseUrl();
+  const rememberedLogin = useMemo(() => readRememberedLogin(), []);
   const [authToken, setAuthToken] = useState(() =>
-    getLocalValue("dzdp_api_token", ""),
+    getLocalValue(API_TOKEN_STORAGE_KEY, ""),
   );
   const [dashboard, setDashboard] = useState<Dashboard>(defaultDashboard);
-  const [dashboardReady, setDashboardReady] = useState(false);
+  const [, setDashboardReady] = useState(false);
   const [notice, setNotice] = useState<Notice>({ type: "success", message: "" });
   const [loading, setLoading] = useState<LoadingState>({
     dashboard: false,
@@ -390,8 +465,9 @@ export default function App() {
   const [proxyForm, setProxyForm] = useState<ProxyForm>(createProxyForm);
   const [users, setUsers] = useState<UserItem[]>([]);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
-  const [loginUsername, setLoginUsername] = useState("admin");
-  const [loginPassword, setLoginPassword] = useState("");
+  const [loginRemember, setLoginRemember] = useState(Boolean(rememberedLogin));
+  const [loginUsername, setLoginUsername] = useState(() => rememberedLogin?.username ?? "");
+  const [loginPassword, setLoginPassword] = useState(() => rememberedLogin?.password ?? "");
   const [loginFormError, setLoginFormError] = useState("");
   const [loginUsernameError, setLoginUsernameError] = useState("");
   const [loginPasswordError, setLoginPasswordError] = useState("");
@@ -459,7 +535,7 @@ export default function App() {
   }, [notice.message]);
 
   useEffect(() => {
-    window.localStorage.removeItem("dzdp_api_base_url");
+    document.title = "饭查查";
   }, []);
 
   const summaryCards = useMemo(
@@ -473,13 +549,13 @@ export default function App() {
       {
         label: "有货状态",
         value: dashboard.summary.in_stock,
-        hint: "最近一次轮询判定为 IN_STOCK",
+        hint: "最近一次轮询判定为有货",
         icon: Activity,
       },
       {
         label: "售罄状态",
         value: dashboard.summary.sold_out,
-        hint: "最近一次轮询判定为 SOLD_OUT",
+        hint: "最近一次轮询判定为售罄",
         icon: CircleAlert,
       },
       {
@@ -538,7 +614,7 @@ export default function App() {
       const message = error instanceof Error ? error.message : "认证失效";
       pushNotice("error", message);
       setAuthToken("");
-      window.localStorage.removeItem("dzdp_api_token");
+      window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
     }
   }
 
@@ -571,8 +647,11 @@ export default function App() {
       })) as { token: string; user: AuthUser; permissions: UserPermissions };
       setAuthToken(payload.token || "");
       setMe({ user: payload.user, permissions: payload.permissions });
-      window.localStorage.setItem("dzdp_api_token", payload.token || "");
-      setLoginPassword("");
+      window.localStorage.setItem(API_TOKEN_STORAGE_KEY, payload.token || "");
+      persistRememberedLogin(loginRemember, username, loginPassword);
+      if (!loginRemember) {
+        setLoginPassword("");
+      }
       setLoginFormError("");
       setLoginUsernameError("");
       setLoginPasswordError("");
@@ -605,7 +684,7 @@ export default function App() {
       setUsers([]);
       setShowAddTargetModal(false);
       setEditingTarget(null);
-      window.localStorage.removeItem("dzdp_api_token");
+      window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
       pushNotice("success", "已退出登录");
     }
   }
@@ -702,10 +781,10 @@ export default function App() {
     setDashboardReady(true);
     setPollSeconds(payload.poll.interval_seconds || 60);
     setTargetForm((current) => {
-      if (current.group_key || !payload.notify_groups.length) {
+      if (current.group_keys.length || !payload.notify_groups.length) {
         return current;
       }
-      return { ...current, group_key: payload.notify_groups[0].key };
+      return { ...current, group_keys: [payload.notify_groups[0].key] };
     });
     setProxyForm(createProxyForm(payload.proxy));
   }
@@ -727,19 +806,12 @@ export default function App() {
     }
   }
 
-  function saveConnection() {
-    window.localStorage.setItem("dzdp_api_token", authToken);
-    if (authToken.trim()) {
-      void bootstrapSession(false);
-    }
-  }
-
   function openAddTargetModal() {
     if (!checkPermission("targets_create")) {
       return;
     }
     setEditingTarget(null);
-    setTargetForm(createTargetForm(dashboard.notify_groups[0]?.key || ""));
+    setTargetForm(createTargetForm(dashboard.notify_groups[0]?.key ? [dashboard.notify_groups[0].key] : []));
     setShowAddTargetModal(true);
   }
 
@@ -751,7 +823,7 @@ export default function App() {
     setTargetForm({
       name: target.name,
       url: target.url,
-      group_key: target.group_key,
+      group_keys: normalizeTargetGroupKeys(target),
     });
     setShowAddTargetModal(true);
   }
@@ -770,7 +842,7 @@ export default function App() {
           body: JSON.stringify({
             set_name: targetForm.name,
             set_url: targetForm.url,
-            set_group_key: targetForm.group_key,
+            set_group_keys: targetForm.group_keys,
           }),
         });
         pushNotice("success", `已更新套餐 #${editingTarget.index}`);
@@ -783,7 +855,7 @@ export default function App() {
       }
       setShowAddTargetModal(false);
       setEditingTarget(null);
-      setTargetForm(createTargetForm(dashboard.notify_groups[0]?.key || ""));
+      setTargetForm(createTargetForm(dashboard.notify_groups[0]?.key ? [dashboard.notify_groups[0].key] : []));
       await loadDashboard();
     } catch (error) {
       pushNotice("error", error instanceof Error ? error.message : "提交套餐失败");
@@ -988,15 +1060,15 @@ export default function App() {
           <div className="mx-auto max-w-lg">
             <Card className="border-white/65 bg-white/88">
               <CardHeader>
-                <CardTitle>登录后台</CardTitle>
-                <CardDescription>使用你的账号登录后台，继续管理监控和通知。</CardDescription>
+                <CardTitle>登录饭查查</CardTitle>
+                <CardDescription>使用你的账号登录饭查查，最长60天登录有效。</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <form className="space-y-4" onSubmit={handleLogin}>
                   <DataField label="用户名">
                     <Input
                       value={loginUsername}
-                      placeholder="admin"
+                      placeholder="请输入用户名"
                       className={loginUsernameError ? "border-rose-300 focus-visible:border-rose-400" : ""}
                       onChange={(event) => {
                         setLoginUsername(event.target.value);
@@ -1024,6 +1096,26 @@ export default function App() {
                       <p className="text-xs text-rose-600">{loginPasswordError}</p>
                     ) : null}
                   </DataField>
+                  <label className="flex items-start gap-3 rounded-xl border border-border/60 bg-secondary/25 px-3 py-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={loginRemember}
+                      className="mt-1 h-4 w-4 rounded border-input text-primary"
+                      onChange={(event) => {
+                        const checked = event.target.checked;
+                        setLoginRemember(checked);
+                        if (!checked) {
+                          persistRememberedLogin(false, "", "");
+                        }
+                      }}
+                    />
+                    <span className="space-y-1">
+                      <span className="block font-medium text-foreground">记住账号密码</span>
+                      <span className="block text-xs leading-5 text-muted-foreground">
+                        仅保存在当前设备，请勿在公用设备勾选。
+                      </span>
+                    </span>
+                  </label>
                   {loginFormError ? (
                     <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
                       {loginFormError}
@@ -1049,129 +1141,99 @@ export default function App() {
       <div className="pointer-events-none absolute bottom-0 left-0 h-72 w-72 rounded-full bg-[radial-gradient(circle,rgba(83,168,153,0.24),transparent_65%)] blur-3xl" />
 
       <main className="container relative z-10 py-4 sm:py-6 lg:py-8">
-        <div className="grid gap-4 lg:grid-cols-[240px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)]">
-          <aside className="hidden lg:block">
-            <div className="sticky top-6">
-              <Card className="border-white/65 bg-white/88">
-                <CardHeader className="space-y-0 border-b-0">
-                  <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-secondary/70 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                    <Cable className="h-3.5 w-3.5" />
-                    DZDP Console
-                  </div>
-                  <div className="space-y-1">
-                    <CardTitle>后台管理</CardTitle>
-                    <CardDescription>左侧导航固定，右侧切换内容区。</CardDescription>
-                  </div>
-                </CardHeader>
-                <CardContent className="grid gap-2">
-                  {visibleNavItems.map((item) => {
-                    const Icon = item.icon;
-                    const active = item.id === activeTab;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        title={item.hint}
-                        onClick={() => setActiveTab(item.id)}
-                        className={cn(
-                          "flex min-w-0 items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
-                          active
-                            ? "border-primary/30 bg-primary/10 text-foreground"
-                            : "border-border/50 bg-secondary/35 text-muted-foreground hover:border-border/80 hover:bg-secondary/60 hover:text-foreground",
-                        )}
-                      >
-                        <Icon className="h-4 w-4 shrink-0" />
-                        <span className="min-w-0">
-                          <span className="block text-sm font-medium">{item.label}</span>
-                          <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
-                            {item.hint}
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })}
-                </CardContent>
-              </Card>
-            </div>
-          </aside>
-
-          <section className="min-w-0 space-y-5 pb-8">
-            <Card className="border-white/65 bg-white/82 lg:hidden">
-              <CardContent className="space-y-3 p-4">
-                <div className="text-sm font-medium">功能切换</div>
-                <div className="flex gap-2 overflow-x-auto pb-1">
-                  {visibleNavItems.map((item) => {
-                    const Icon = item.icon;
-                    const active = item.id === activeTab;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        title={item.hint}
-                        onClick={() => setActiveTab(item.id)}
-                        className={cn(
-                          "inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border px-3.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
-                          active
-                            ? "border-primary/35 bg-primary/10 text-foreground"
-                            : "border-border/70 bg-background text-muted-foreground hover:border-border hover:bg-secondary/40",
-                        )}
-                      >
-                        <Icon className="h-4 w-4 shrink-0" />
-                        {item.label}
-                      </button>
-                    );
-                  })}
+        <section className="min-w-0 space-y-5 pb-8">
+          <Card className="border-white/65 bg-white/88">
+            <CardContent className="flex min-w-0 flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0 space-y-3">
+                <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-secondary/70 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                  <Cable className="h-3.5 w-3.5" />
+                  饭查查管理台
                 </div>
-              </CardContent>
-            </Card>
-
-            {notice.message ? (
-              <div
-                className={cn(
-                  "rounded-[1.4rem] border px-4 py-3 text-sm shadow-sm",
-                  notice.type === "error"
-                    ? "border-rose-200 bg-rose-50 text-rose-800"
-                    : "border-emerald-200 bg-emerald-50 text-emerald-800",
-                )}
-              >
-                {notice.message}
+                <div className="min-w-0 space-y-1">
+                  <CardTitle>饭查查后台</CardTitle>
+                  <CardDescription>账号操作位于顶部，功能切换与内容区分层展示。</CardDescription>
+                </div>
               </div>
-            ) : null}
-
-            <Card className="border-white/65 bg-white/72">
-              <CardContent className="flex min-w-0 flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
-                <div className="space-y-1">
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
-                    {activeNavItem.label}
-                  </p>
-                  <p className="text-sm text-muted-foreground">{activeNavItem.hint}</p>
+              <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Badge variant="accent" className="max-w-full truncate">
+                    {currentUser?.username || "未知用户"}
+                  </Badge>
+                  <span className="text-sm text-muted-foreground">当前账号</span>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="accent">{currentUser?.username || "未知用户"}</Badge>
-                  <Button
-                    variant="secondary"
-                    onClick={() => void loadDashboard()}
-                    disabled={loading.dashboard}
-                    size="sm"
-                  >
-                    <RefreshCw className={cn("h-4 w-4", loading.dashboard && "animate-spin")} />
-                    刷新面板
-                  </Button>
-                  <Button variant="outline" onClick={handleLogout} size="sm">
-                    <LogOut className="h-4 w-4" />
-                    退出登录
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+                <Button
+                  variant="outline"
+                  onClick={handleLogout}
+                  size="sm"
+                  className="w-full sm:w-auto"
+                >
+                  <LogOut className="h-4 w-4" />
+                  退出登录
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
 
-            {activeTab === "connection" ? (
-              <section className="grid gap-5">
-                <section className="grid gap-5 rounded-[2rem] border border-white/60 bg-hero p-5 shadow-panel sm:p-6 lg:grid-cols-2">
+          <Card className="border-white/65 bg-white/82">
+            <CardContent className="space-y-3 p-4 sm:p-5">
+              <div className="text-sm font-medium">功能切换</div>
+              <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 lg:flex-wrap lg:overflow-visible">
+                {visibleNavItems.map((item) => {
+                  const Icon = item.icon;
+                  const active = item.id === activeTab;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      title={item.hint}
+                      onClick={() => setActiveTab(item.id)}
+                      className={cn(
+                        "inline-flex min-h-10 shrink-0 items-center gap-2 rounded-xl border px-3.5 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25 lg:flex-1",
+                        active
+                          ? "border-primary/35 bg-primary/10 text-foreground"
+                          : "border-border/70 bg-background text-muted-foreground hover:border-border hover:bg-secondary/40",
+                      )}
+                    >
+                      <Icon className="h-4 w-4 shrink-0" />
+                      <span className="truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+
+          {notice.message ? (
+            <div
+              className={cn(
+                "rounded-[1.4rem] border px-4 py-3 text-sm shadow-sm",
+                notice.type === "error"
+                  ? "border-rose-200 bg-rose-50 text-rose-800"
+                  : "border-emerald-200 bg-emerald-50 text-emerald-800",
+              )}
+            >
+              {notice.message}
+            </div>
+          ) : null}
+
+          <Card className="border-white/65 bg-white/72">
+            <CardContent className="flex min-w-0 flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between">
+              <div className="space-y-1">
+                <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
+                  {activeNavItem.label}
+                </p>
+                <p className="text-sm text-muted-foreground">{activeNavItem.hint}</p>
+              </div>
+            </CardContent>
+          </Card>
+
+          {activeTab === "connection" ? (
+            <section className="grid gap-5">
+              <section className="grid gap-5 rounded-[2rem] border border-white/60 bg-hero p-5 shadow-panel sm:p-6">
                   <div className="space-y-4">
                     <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">连接设置</h1>
                     <p className="text-sm leading-7 text-muted-foreground">
-                      在这里查看连接状态并管理访问凭证。
+                      在这里查看连接状态与鉴权状态。
                     </p>
                     <div className="grid gap-3 sm:grid-cols-2">
                       {summaryCards.map((card) => {
@@ -1197,62 +1259,21 @@ export default function App() {
                       })}
                     </div>
                   </div>
-
-                  <Card className="bg-white/82">
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <Link2 className="h-5 w-5 text-primary" />
-                        连接配置
-                      </CardTitle>
-                      <CardDescription>管理登录凭证并检查连接状态。</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <DataField
-                        label="Bearer Token"
-                        hint="服务端配置了 admin_api.auth_token 时必填。"
-                      >
-                        <Input
-                          type="password"
-                          value={authToken}
-                          placeholder="可选"
-                          onChange={(event) => setAuthToken(event.target.value)}
-                        />
-                      </DataField>
-                      <div className="flex flex-wrap gap-3">
-                        <Button onClick={saveConnection} disabled={loading.dashboard}>
-                          {loading.dashboard ? "连接中..." : "保存并刷新"}
-                        </Button>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                        <Badge variant={dashboardReady ? "success" : "danger"}>
-                          {dashboardReady ? "已连接" : "未连接"}
-                        </Badge>
-                        {dashboard.admin_api.auth_token_configured ? (
-                          <Badge variant="accent">服务端已启用鉴权</Badge>
-                        ) : (
-                          <Badge>服务端未启用鉴权</Badge>
-                        )}
-                        {dashboard.generated_at ? (
-                          <span>最近刷新：{dashboard.generated_at}</span>
-                        ) : null}
-                      </div>
-                    </CardContent>
-                  </Card>
-                </section>
               </section>
-            ) : null}
+            </section>
+          ) : null}
 
-            {activeTab === "targets" ? (
-              <Card>
+          {activeTab === "targets" ? (
+            <Card>
                 <CardHeader className="pb-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="space-y-2">
                       <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
-                        Targets
+                        套餐管理
                       </div>
                       <CardTitle>监控套餐</CardTitle>
                       <CardDescription>
-                        首页主视图，支持快速新增与删除监控项。
+                        统一管理需要关注的套餐，支持快速新增、编辑与删除。
                       </CardDescription>
                     </div>
                     <div className="flex items-center gap-2">
@@ -1280,7 +1301,7 @@ export default function App() {
                 <CardContent className="space-y-5">
                   {!canTargetsRead ? (
                     <div className="rounded-[1.35rem] border border-dashed border-border bg-secondary/30 p-5 text-sm text-muted-foreground">
-                      当前账号没有 `targets_read` 权限，无法查看监控列表。
+                      当前账号没有查看监控列表的权限。
                     </div>
                   ) : (
                     <div className="grid gap-3">
@@ -1299,9 +1320,13 @@ export default function App() {
                                   {stateLabel(target.last_state)}
                                 </Badge>
                               </div>
-                              <p className="text-sm text-muted-foreground">
-                                {target.group_name || target.group_key} / {target.group_key}
-                              </p>
+                              <div className="flex flex-wrap gap-2 pt-1">
+                                {normalizeTargetGroupKeys(target).map((groupKey, index) => (
+                                  <Badge key={`${target.activity_id}-${groupKey}`} variant="default">
+                                    {(target.group_names?.[index] || target.group_name || groupKey)} / {groupKey}
+                                  </Badge>
+                                ))}
+                              </div>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
                               <Button
@@ -1328,7 +1353,7 @@ export default function App() {
                           </div>
                           {target.last_title ? (
                             <p className="mt-3 text-sm text-muted-foreground">
-                              接口标题：{target.last_title}
+                              页面标题：{target.last_title}
                             </p>
                           ) : null}
                           <a
@@ -1359,24 +1384,24 @@ export default function App() {
                     </div>
                   )}
                 </CardContent>
-              </Card>
-            ) : null}
+            </Card>
+          ) : null}
 
             {activeTab === "groups" ? (
               <Card>
                 <CardHeader className="pb-4">
                   <div className="space-y-2">
                     <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
-                      Notify Routing
+                      通知管理
                     </div>
                     <CardTitle>通知分组</CardTitle>
-                    <CardDescription>管理通知分组与 Webhook 绑定关系。</CardDescription>
+                    <CardDescription>管理通知分组与通知地址的对应关系。</CardDescription>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-5">
                   {!canWebhookManage ? (
                     <div className="rounded-[1.35rem] border border-dashed border-border bg-secondary/30 p-5 text-sm text-muted-foreground">
-                      当前账号没有 `webhook_manage` 权限，通知分组处于只读状态。
+                      当前账号没有管理通知分组的权限，当前页面为只读状态。
                     </div>
                   ) : null}
                   <form className="grid gap-4" onSubmit={submitGroup}>
@@ -1395,7 +1420,7 @@ export default function App() {
                           }
                         />
                       </DataField>
-                      <DataField label="分组 Key">
+                      <DataField label="分组标识">
                         <Input
                           value={groupForm.key}
                           disabled={Boolean(editingGroupKey) || !canWebhookManage}
@@ -1409,7 +1434,7 @@ export default function App() {
                         />
                       </DataField>
                     </div>
-                    <DataField label="Webhook">
+                    <DataField label="通知地址">
                       <Input
                         disabled={!canWebhookManage}
                         value={groupForm.webhook}
@@ -1425,7 +1450,7 @@ export default function App() {
                     {editingGroupKey ? (
                       <div className="grid gap-3 rounded-[1.25rem] bg-secondary/45 p-4 text-sm">
                         <label className="flex items-center justify-between gap-3">
-                          <span>保存时清空该分组的 webhook</span>
+                          <span>保存时清空该分组的通知地址</span>
                           <Switch
                             disabled={!canWebhookManage}
                             checked={groupForm.clear_webhook}
@@ -1493,7 +1518,7 @@ export default function App() {
                           </Badge>
                         </div>
                         <p className="mt-3 text-sm text-muted-foreground">
-                          Webhook：{group.webhook_masked || "未配置"}
+                          通知地址：{group.webhook_masked || "未配置"}
                         </p>
                         <p className="mt-1 text-sm text-muted-foreground">
                           状态：{group.webhook_configured ? "已配置" : "未配置"}
@@ -1536,7 +1561,7 @@ export default function App() {
                 <CardHeader>
                   <div className="space-y-2">
                     <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
-                      Polling
+                      刷新节奏
                     </div>
                     <CardTitle>轮询配置</CardTitle>
                     <CardDescription>调整轮询频率，控制刷新节奏。</CardDescription>
@@ -1545,7 +1570,7 @@ export default function App() {
                 <CardContent>
                   {!canPollManage ? (
                     <div className="mb-4 rounded-xl border border-dashed border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
-                      当前账号没有 `poll_manage` 权限，无法修改轮询配置。
+                      当前账号没有修改刷新频率的权限。
                     </div>
                   ) : null}
                   <form className="grid gap-4" onSubmit={submitPoll}>
@@ -1576,22 +1601,22 @@ export default function App() {
                 <CardHeader>
                   <div className="space-y-2">
                     <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
-                      Proxy Pool
+                      访问保障
                     </div>
                     <CardTitle>代理设置</CardTitle>
-                    <CardDescription>管理代理池参数，保障请求稳定性。</CardDescription>
+                    <CardDescription>管理访问通道参数，保障连接稳定性。</CardDescription>
                   </div>
                 </CardHeader>
                 <CardContent>
                   {!canProxyManage ? (
                     <div className="mb-4 rounded-xl border border-dashed border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
-                      当前账号没有 `proxy_manage` 权限，无法修改代理设置。
+                      当前账号没有修改访问通道设置的权限。
                     </div>
                   ) : null}
                   <form className="grid gap-4" onSubmit={submitProxy}>
                     <div className="grid gap-4 rounded-[1.4rem] bg-secondary/45 p-4 sm:grid-cols-3">
                       <label className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-white/75 px-4 py-3 sm:col-span-1">
-                        <span className="text-sm font-medium">启用代理池</span>
+                        <span className="text-sm font-medium">启用访问通道</span>
                         <Switch
                           disabled={!canProxyManage}
                           checked={proxyForm.enabled}
@@ -1600,7 +1625,7 @@ export default function App() {
                           }
                         />
                       </label>
-                      <DataField label="Provider">
+                      <DataField label="通道类型">
                         <Input
                           disabled={!canProxyManage}
                           value={proxyForm.provider}
@@ -1631,7 +1656,7 @@ export default function App() {
                     </div>
 
                     <div className="grid gap-4 sm:grid-cols-2">
-                      <DataField label="API URL">
+                      <DataField label="服务地址">
                         <Input
                           disabled={!canProxyManage}
                           value={proxyForm.api_url}
@@ -1644,7 +1669,7 @@ export default function App() {
                           }
                         />
                       </DataField>
-                      <DataField label="API Key Header">
+                      <DataField label="鉴权请求头名称">
                         <Input
                           disabled={!canProxyManage}
                           value={proxyForm.api_key_header}
@@ -1659,13 +1684,13 @@ export default function App() {
                       </DataField>
                     </div>
 
-                    <DataField label="API Key" hint="留空不会清除现有服务端 API Key。">
+                    <DataField label="访问密钥" hint="留空不会清除服务端已保存的访问密钥。">
                       <Input
                         type="password"
                         disabled={!canProxyManage}
                         value={proxyForm.api_key}
                         placeholder={
-                          dashboard.proxy.api_key_configured ? "服务端已配置，按需覆盖" : "保存时写入服务端配置"
+                          dashboard.proxy.api_key_configured ? "服务端已配置，可按需覆盖" : "保存后写入服务端配置"
                         }
                         onChange={(event) =>
                           setProxyForm((current) => ({
@@ -1707,7 +1732,7 @@ export default function App() {
                           }
                         />
                       </DataField>
-                      <DataField label="Sticky 模式">
+                      <DataField label="保持方式">
                         <Select
                           disabled={!canProxyManage}
                           value={proxyForm.sticky_mode}
@@ -1718,14 +1743,14 @@ export default function App() {
                             }))
                           }
                         >
-                          <option value="shared">shared</option>
-                          <option value="per_target">per_target</option>
+                          <option value="shared">共享</option>
+                          <option value="per_target">按套餐独立</option>
                         </Select>
                       </DataField>
                     </div>
 
                     <label className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-secondary/45 px-4 py-3 text-sm">
-                      <span>验证代理池接口 SSL 证书</span>
+                      <span>校验服务地址的 SSL 证书</span>
                       <Switch
                         disabled={!canProxyManage}
                         checked={proxyForm.verify_ssl}
@@ -1736,7 +1761,7 @@ export default function App() {
                     </label>
 
                     <div className="grid gap-4 lg:grid-cols-2">
-                      <DataField label="extra_headers (JSON)">
+                      <DataField label="额外请求头（JSON）">
                         <Textarea
                           disabled={!canProxyManage}
                           value={proxyForm.extra_headers_json}
@@ -1748,7 +1773,7 @@ export default function App() {
                           }
                         />
                       </DataField>
-                      <DataField label="query_params (JSON)">
+                      <DataField label="地址参数（JSON）">
                         <Textarea
                           disabled={!canProxyManage}
                           value={proxyForm.query_params_json}
@@ -1763,7 +1788,7 @@ export default function App() {
                     </div>
 
                     <div className="grid gap-4 lg:grid-cols-2">
-                      <DataField label="request_body (JSON)">
+                      <DataField label="请求内容（JSON）">
                         <Textarea
                           disabled={!canProxyManage}
                           value={proxyForm.request_body_json}
@@ -1775,7 +1800,7 @@ export default function App() {
                           }
                         />
                       </DataField>
-                      <DataField label="response_fields (JSON)">
+                      <DataField label="返回字段映射（JSON）">
                         <Textarea
                           disabled={!canProxyManage}
                           value={proxyForm.response_fields_json}
@@ -1789,7 +1814,7 @@ export default function App() {
                       </DataField>
                     </div>
 
-                    <DataField label="response_data_path">
+                    <DataField label="返回数据路径">
                       <Input
                         disabled={!canProxyManage}
                         value={proxyForm.response_data_path}
@@ -1822,7 +1847,7 @@ export default function App() {
                 <CardHeader>
                   <div className="space-y-2">
                     <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
-                      Access Control
+                      账号管理
                     </div>
                     <CardTitle>用户功能权限</CardTitle>
                     <CardDescription>管理后台账号及功能访问权限。</CardDescription>
@@ -1831,7 +1856,7 @@ export default function App() {
                 <CardContent className="space-y-5">
                   {!canManagePermissions ? (
                     <div className="rounded-[1.35rem] border border-dashed border-border bg-secondary/30 p-5 text-sm text-muted-foreground">
-                      当前账号不是管理员，无法进入权限配置。
+                      当前账号不是管理员，无法查看权限配置。
                     </div>
                   ) : (
                     <>
@@ -1903,7 +1928,14 @@ export default function App() {
                                   key={permission}
                                   className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-white/70 px-4 py-3 text-sm"
                                 >
-                                  <span>{permission}</span>
+                                  <div className="space-y-1">
+                                    <p className="font-medium text-foreground">
+                                      {PERMISSION_LABELS[permission]}
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {PERMISSION_DESCRIPTIONS[permission]}
+                                    </p>
+                                  </div>
                                   <Switch
                                     disabled={selectedPermissionUser.is_admin}
                                     checked={
@@ -1933,7 +1965,7 @@ export default function App() {
                   <CardHeader className="pb-3">
                     <CardTitle>{editingTarget ? "编辑监控" : "新增监控"}</CardTitle>
                     <CardDescription>
-                      仅需填写名字、链接、分组 key，提交后立即写入配置。
+                      填写名称、链接和通知分组后，提交即可立即生效。
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
@@ -1964,23 +1996,42 @@ export default function App() {
                           }
                         />
                       </DataField>
-                      <DataField label="分组 (group_key)">
-                        <Select
-                          required
-                          value={targetForm.group_key}
-                          onChange={(event) =>
-                            setTargetForm((current) => ({
-                              ...current,
-                              group_key: event.target.value,
-                            }))
-                          }
-                        >
-                          {dashboard.notify_groups.map((group) => (
-                            <option key={group.key} value={group.key}>
-                              {group.name} ({group.key})
-                            </option>
-                          ))}
-                        </Select>
+                      <DataField label="通知分组" hint="可多选，至少选择一个分组。">
+                        <div className="grid gap-3 rounded-[1.15rem] border border-border/70 bg-secondary/35 p-3">
+                          {dashboard.notify_groups.map((group) => {
+                            const checked = targetForm.group_keys.includes(group.key);
+                            return (
+                              <label
+                                key={group.key}
+                                className={cn(
+                                  "flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm transition-colors",
+                                  checked
+                                    ? "border-primary/40 bg-primary/10"
+                                    : "border-border/60 bg-white/70",
+                                )}
+                              >
+                                <div>
+                                  <p className="font-medium">{group.name}</p>
+                                  <p className="text-xs text-muted-foreground">{group.key}</p>
+                                </div>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(event) =>
+                                    setTargetForm((current) => ({
+                                      ...current,
+                                      group_keys: toggleTargetGroup(
+                                        current.group_keys,
+                                        group.key,
+                                        event.target.checked,
+                                      ),
+                                    }))
+                                  }
+                                />
+                              </label>
+                            );
+                          })}
+                        </div>
                       </DataField>
                       <div className="flex items-center justify-end gap-2 pt-1">
                         <Button
@@ -1997,6 +2048,7 @@ export default function App() {
                           type="submit"
                           disabled={
                             loading.targetSubmit ||
+                            targetForm.group_keys.length === 0 ||
                             (editingTarget ? !canTargetsUpdate : !canTargetsCreate)
                           }
                           title={
@@ -2022,7 +2074,6 @@ export default function App() {
               </div>
             ) : null}
           </section>
-        </div>
       </main>
     </div>
   );

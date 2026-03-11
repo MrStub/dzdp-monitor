@@ -39,9 +39,10 @@ def cmd_list(config: Dict[str, Any], as_json: bool) -> int:
         print("No targets")
         return 0
     for row in rows:
+        group_text = ",".join(row.get("group_keys") or []) or row["group_key"] or "-"
         print(
             f"{row['index']}. activity_id={row['activity_id'] or '-'}"
-            f" | name={row['name'] or '-'} | group={row['group_key'] or '-'} | url={row['url'] or '-'}"
+            f" | name={row['name'] or '-'} | groups={group_text} | url={row['url'] or '-'}"
         )
     return 0
 
@@ -70,9 +71,10 @@ def cmd_get(
     if as_json:
         print(json.dumps(target, ensure_ascii=False, indent=2))
     else:
+        group_text = ",".join(target.get("group_keys") or []) or target["group_key"] or "-"
         print(
             f"{target['index']}. activity_id={target['activity_id'] or '-'}"
-            f" | name={target['name'] or '-'} | group={target['group_key'] or '-'} | url={target['url'] or '-'}"
+            f" | name={target['name'] or '-'} | groups={group_text} | url={target['url'] or '-'}"
         )
     return 0
 
@@ -92,6 +94,7 @@ def cmd_add(
         url=url,
         name=name,
         activity_id=activity_id,
+        group_keys_values=None,
         group_key_value=group_key,
         upsert=upsert,
     )
@@ -121,6 +124,7 @@ def cmd_update(
         set_name=set_name,
         set_url=set_url,
         new_activity_id=new_activity_id,
+        set_group_keys=None,
         set_group_key=set_group_key,
     )
     print_payload(payload, as_json)
