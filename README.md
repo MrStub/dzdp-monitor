@@ -4,7 +4,7 @@
 
 - `monitor.py`：常驻监控进程，部署在你自己的服务器
 - `admin_api.py`：管理 API，部署在你自己的服务器
-- `web-admin/`：Vue 2 管理前端，部署到 Cloudflare Pages
+- `web-admin/`：React + TypeScript + Vite 管理前端，使用 Tailwind / shadcn/ui 风格组件，部署到 Cloudflare Pages
 
 ## 当前能力
 
@@ -23,7 +23,7 @@
 - [admin_api.py](/Users/daizhenghao/Documents/workspace/TraeSpace/dzdp-monitor/admin_api.py)：管理 API
 - [proxy_provider.py](/Users/daizhenghao/Documents/workspace/TraeSpace/dzdp-monitor/proxy_provider.py)：代理池 provider 适配入口
 - [app_config.py](/Users/daizhenghao/Documents/workspace/TraeSpace/dzdp-monitor/app_config.py)：配置读写、目标 CRUD、分组 CRUD、公用规则
-- [web-admin/](/Users/daizhenghao/Documents/workspace/TraeSpace/dzdp-monitor/web-admin)：Vue 2 + vue-cli 前端
+- [web-admin/](/root/.openclaw/workspace/skills/dzdp-monitor/web-admin)：React + TypeScript + Vite 前端
 - [docker-compose.server.yml](/Users/daizhenghao/Documents/workspace/TraeSpace/dzdp-monitor/docker-compose.server.yml)：服务端双容器样板
 - [DEPLOYMENT.md](/Users/daizhenghao/Documents/workspace/TraeSpace/dzdp-monitor/DEPLOYMENT.md)：详细部署流程
 
@@ -87,7 +87,7 @@ python3 admin_api.py --config config.json
 ```bash
 cd web-admin
 npm install
-npm run serve
+npm run dev
 ```
 
 如果本地前端不是直接连 `http://127.0.0.1:8787`，可在浏览器里改 API 地址；页面会存到 localStorage。
@@ -138,9 +138,25 @@ Cloudflare Pages 推荐配置：
 - Build command：`npm run build`
 - Build output directory：`dist`
 - Root directory：`web-admin`
-- 环境变量：`VUE_APP_API_BASE_URL=https://你的服务端域名`
+- 环境变量：`VITE_API_BASE_URL=https://你的服务端域名`
 
 前端会调用你自己服务器上的 `admin_api.py`。
+
+## 前端技术栈
+
+- React 19
+- TypeScript 5
+- Vite 7
+- Tailwind CSS 3
+- shadcn/ui 风格基础组件（本地维护）
+
+前端仍然只负责管理界面，不改后端 API 协议：
+
+- `GET /api/dashboard`
+- `POST/PATCH/DELETE /api/targets`
+- `POST/PATCH/DELETE /api/notify-groups`
+- `PUT /api/poll`
+- `PUT /api/proxy`
 
 ## 服务端 Docker
 
