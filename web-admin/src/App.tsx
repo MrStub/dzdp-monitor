@@ -363,17 +363,6 @@ function stateLabel(state: string) {
   return "未知";
 }
 
-function middleEllipsis(value: string, head = 30, tail = 20) {
-  const text = String(value || "").trim();
-  if (!text) {
-    return "";
-  }
-  if (text.length <= head + tail + 3) {
-    return text;
-  }
-  return `${text.slice(0, head)}...${text.slice(-tail)}`;
-}
-
 function parseJsonField(label: string, text: string) {
   try {
     const parsed = JSON.parse(text || "{}") as unknown;
@@ -1158,7 +1147,7 @@ export default function App() {
               <div className="min-w-0 space-y-3">
                 <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-secondary/70 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                   <Cable className="h-3.5 w-3.5" />
-                  饭查查管理端
+                  饭查查管理台
                 </div>
                 <div className="min-w-0 space-y-1">
                   <CardTitle>饭查查后台</CardTitle>
@@ -1309,61 +1298,34 @@ export default function App() {
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent className="space-y-4">
+                <CardContent className="space-y-5">
                   {!canTargetsRead ? (
                     <div className="rounded-[1.35rem] border border-dashed border-border bg-secondary/30 p-5 text-sm text-muted-foreground">
                       当前账号没有查看监控列表的权限。
                     </div>
                   ) : (
-                    <div className="grid gap-2.5">
+                    <div className="grid gap-3">
                     {dashboard.targets.length ? (
                       dashboard.targets.map((target) => (
                         <div
                           key={`${target.activity_id}-${target.index}`}
-                          className="rounded-[1rem] border border-border/70 bg-secondary/40 px-3 py-2.5"
+                          className="rounded-[1.35rem] border border-border/70 bg-secondary/40 p-5"
                         >
-                          <div className="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between">
-                            <div className="min-w-0 space-y-2">
-                              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
                                 <Badge variant="accent">#{target.index}</Badge>
-                                <h3 className="max-w-full truncate text-sm font-semibold leading-6 sm:text-base">
-                                  {target.name}
-                                </h3>
-                                <Badge
-                                  className="border-primary/20 bg-primary/10 px-2.5 text-[11px] font-semibold text-primary"
-                                  variant="default"
-                                >
-                                  activityId: {target.activity_id}
-                                </Badge>
+                                <h3 className="text-base font-semibold">{target.name}</h3>
                                 <Badge variant={stateBadgeVariant(target.last_state)}>
                                   {stateLabel(target.last_state)}
                                 </Badge>
                               </div>
-                              <div className="flex flex-wrap gap-1.5">
+                              <div className="flex flex-wrap gap-2 pt-1">
                                 {normalizeTargetGroupKeys(target).map((groupKey, index) => (
                                   <Badge key={`${target.activity_id}-${groupKey}`} variant="default">
                                     {(target.group_names?.[index] || target.group_name || groupKey)} / {groupKey}
                                   </Badge>
                                 ))}
-                              </div>
-                              {target.last_title ? (
-                                <p className="truncate text-xs leading-5 text-muted-foreground">
-                                  页面标题：{target.last_title}
-                                </p>
-                              ) : null}
-                              <a
-                                className="block max-w-full truncate text-xs leading-5 sm:text-sm"
-                                href={target.url}
-                                rel="noreferrer"
-                                target="_blank"
-                                title={target.url}
-                              >
-                                {middleEllipsis(target.url, 36, 24)}
-                              </a>
-                              <div className="grid gap-1 text-xs leading-5 text-muted-foreground sm:grid-cols-3 sm:gap-2">
-                                <span>最近变更：{target.last_change_ts || "暂无"}</span>
-                                <span>失败次数：{target.fail_count || 0}</span>
-                                <span>错误连击：{target.last_error_streak || 0}</span>
                               </div>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
@@ -1389,8 +1351,26 @@ export default function App() {
                               </Button>
                             </div>
                           </div>
+                          {target.last_title ? (
+                            <p className="mt-3 text-sm text-muted-foreground">
+                              页面标题：{target.last_title}
+                            </p>
+                          ) : null}
+                          <a
+                            className="mt-3 block break-all text-sm"
+                            href={target.url}
+                            rel="noreferrer"
+                            target="_blank"
+                          >
+                            {target.url}
+                          </a>
+                          <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
+                            <span>最近变更：{target.last_change_ts || "暂无"}</span>
+                            <span>失败次数：{target.fail_count || 0}</span>
+                            <span>错误连击：{target.last_error_streak || 0}</span>
+                          </div>
                           {target.last_error_text ? (
-                            <p className="mt-2 rounded-xl bg-rose-50 px-2.5 py-1.5 text-xs leading-5 text-rose-700 sm:text-sm">
+                            <p className="mt-3 rounded-2xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
                               {target.last_error_text}
                             </p>
                           ) : null}
