@@ -291,6 +291,28 @@ function normalizePermissions(raw: unknown, fallback: UserPermissions): UserPerm
   };
 }
 
+function parseActivityIdFromInput(input: string) {
+  const raw = String(input || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  const extractedUrl = raw.match(/https?:\/\/[^\s]+/i)?.[0] ?? raw;
+  try {
+    const parsed = new URL(extractedUrl);
+    for (const key of ["activityid", "activityId"]) {
+      const value = parsed.searchParams.get(key)?.trim();
+      if (value) {
+        return value;
+      }
+    }
+  } catch {
+    // Fall through to regex extraction for pasted text or incomplete URL-like content.
+  }
+
+  const matched = raw.match(/[?&](activityid|activityId)=([^&#\s]+)/);
+  return matched?.[2]?.trim() ?? "";
+}
 
 function createTargetForm(groupKeys: string[] = [], enabled = true): TargetForm {
   return { name: "", url: "", group_keys: groupKeys, enabled };
@@ -834,6 +856,10 @@ export default function App() {
     event.preventDefault();
     const permission = editingTarget ? "targets_update" : "targets_create";
     if (!checkPermission(permission)) {
+      return;
+    }
+    if (!parseActivityIdFromInput(targetForm.url)) {
+      pushNotice("error", "链接无效：未识别 activity_id，请检查链接或手动填写 activity_id");
       return;
     }
     setLoading((current) => ({ ...current, targetSubmit: true }));
