@@ -42,6 +42,29 @@ def normalize_url(url: str) -> str:
     raw = str(url or "").strip()
     if not raw:
         return ""
+    https_index = raw.find("https://")
+    if https_index >= 0:
+        raw = raw[https_index:].strip()
+    parsed = urlparse(raw)
+    filtered_query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key not in EPHEMERAL_QUERY_KEYS
+    ]
+    normalized = parsed._replace(
+        query=urlencode(filtered_query, doseq=True),
+        fragment="",
+    )
+    return urlunparse(normalized)
+
+
+def normalize_target_url(url: str) -> str:
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    https_index = raw.find("https://")
+    if https_index >= 0:
+        raw = raw[https_index:].strip()
     parsed = urlparse(raw)
     filtered_query = [
         (key, value)
@@ -298,7 +321,7 @@ def target_name(target: Dict[str, Any]) -> str:
 
 
 def target_url(target: Dict[str, Any]) -> str:
-    return normalize_url(str(target.get("url", "")))
+    return normalize_target_url(str(target.get("url", "")))
 
 
 def _clean_group_key_list(values: List[Any]) -> List[str]:
@@ -424,7 +447,7 @@ def find_target_indexes_by_name(targets: List[Dict[str, Any]], name: str) -> Lis
 
 def find_target_indexes_by_url(targets: List[Dict[str, Any]], url: str) -> List[int]:
     wanted = normalize_url(url)
-    return [idx for idx, target in enumerate(targets) if target_url(target) == wanted]
+    return [idx for idx, target in enumerate(targets) if normalize_url(str(target.get("url", ""))) == wanted]
 
 
 
@@ -535,7 +558,7 @@ def add_target(
 ) -> Dict[str, Any]:
     normalize_config_in_place(config)
     targets = ensure_targets(config)
-    normalized_url = normalize_url(url)
+    normalized_url = normalize_target_url(url)
     aid = parse_activity_id(normalized_url, activity_id)
     if not aid:
         raise ConfigError("Cannot parse activity_id from url. Please pass activity_id explicitly.")
@@ -599,7 +622,7 @@ def update_target(
 
     cur = dict(targets[idx])
     current_activity_id = target_activity_id(cur) or ""
-    final_url = normalize_url(set_url) if set_url is not None else target_url(cur)
+    final_url = normalize_target_url(set_url) if set_url is not None else target_url(cur)
     parsed_from_url = parse_activity_id(final_url)
     final_activity_id = str(new_activity_id).strip() if new_activity_id else (parsed_from_url or current_activity_id)
     if not final_activity_id:
