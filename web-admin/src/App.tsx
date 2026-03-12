@@ -2031,6 +2031,11 @@ export default function App() {
                               </label>
                             );
                           })}
+                          {dashboard.notify_groups.length === 0 ? (
+                            <p className="text-xs text-muted-foreground">
+                              当前账号无分组列表权限，提交后将使用系统默认分组。
+                            </p>
+                          ) : null}
                         </div>
                       </DataField>
                       <div className="flex items-center justify-end gap-2 pt-1">
@@ -2048,7 +2053,7 @@ export default function App() {
                           type="submit"
                           disabled={
                             loading.targetSubmit ||
-                            targetForm.group_keys.length === 0 ||
+                            (dashboard.notify_groups.length > 0 && targetForm.group_keys.length === 0) ||
                             (editingTarget ? !canTargetsUpdate : !canTargetsCreate)
                           }
                           title={
