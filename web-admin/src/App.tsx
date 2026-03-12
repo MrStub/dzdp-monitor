@@ -484,6 +484,7 @@ export default function App() {
   const [showAddTargetModal, setShowAddTargetModal] = useState(false);
   const [editingTarget, setEditingTarget] = useState<TargetItem | null>(null);
   const [targetForm, setTargetForm] = useState<TargetForm>(() => createTargetForm());
+  const [targetFormError, setTargetFormError] = useState("");
   const [groupForm, setGroupForm] = useState<GroupForm>(createGroupForm);
   const [proxyForm, setProxyForm] = useState<ProxyForm>(createProxyForm);
   const [users, setUsers] = useState<UserItem[]>([]);
@@ -835,6 +836,7 @@ export default function App() {
     }
     setEditingTarget(null);
     setTargetForm(createTargetForm(dashboard.notify_groups[0]?.key ? [dashboard.notify_groups[0].key] : []));
+    setTargetFormError("");
     setShowAddTargetModal(true);
   }
 
@@ -849,6 +851,7 @@ export default function App() {
       group_keys: normalizeTargetGroupKeys(target),
       enabled: target.enabled,
     });
+    setTargetFormError("");
     setShowAddTargetModal(true);
   }
 
@@ -859,9 +862,10 @@ export default function App() {
       return;
     }
     if (!parseActivityIdFromInput(targetForm.url)) {
-      pushNotice("error", "链接无效：未识别 activity_id，请检查链接或手动填写 activity_id");
+      setTargetFormError("链接无效：未识别 activity_id，请检查链接或手动填写 activity_id");
       return;
     }
+    setTargetFormError("");
     setLoading((current) => ({ ...current, targetSubmit: true }));
     try {
       if (editingTarget) {
@@ -885,6 +889,7 @@ export default function App() {
       setShowAddTargetModal(false);
       setEditingTarget(null);
       setTargetForm(createTargetForm(dashboard.notify_groups[0]?.key ? [dashboard.notify_groups[0].key] : []));
+      setTargetFormError("");
       await loadDashboard();
     } catch (error) {
       pushNotice("error", error instanceof Error ? error.message : "提交套餐失败");
@@ -2048,13 +2053,18 @@ export default function App() {
                           required
                           value={targetForm.url}
                           placeholder="https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=..."
-                          onChange={(event) =>
+                          className={targetFormError ? "border-rose-300 focus-visible:border-rose-400" : ""}
+                          onChange={(event) => {
                             setTargetForm((current) => ({
                               ...current,
                               url: event.target.value,
-                            }))
-                          }
+                            }));
+                            setTargetFormError("");
+                          }}
                         />
+                        {targetFormError ? (
+                          <p className="text-xs text-rose-600">{targetFormError}</p>
+                        ) : null}
                       </DataField>
                       <label className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-secondary/35 px-4 py-3 text-sm">
                         <span>启用该监控</span>
@@ -2117,6 +2127,7 @@ export default function App() {
                           onClick={() => {
                             setShowAddTargetModal(false);
                             setEditingTarget(null);
+                            setTargetFormError("");
                           }}
                         >
                           取消
