@@ -12,3 +12,16 @@
 
 ### 验证
 - `web-admin` 执行 `npm run build` 通过（TypeScript + Vite）。
+
+### 新增
+- 监控目标与通知分组改为 SQLite 持久化（`monitor_targets` / `monitor_notify_groups`），轮询间隔等 poll 配置仍保持 JSON 管理。
+- 新增监控目标启停开关 `enabled`（默认开启），支持前端卡片开关与新增/编辑表单设置。
+- 新增“不可用信号自动停查”机制：当出现 `productBrieflnfo is null` / 需登录态类不可用信号连续达到阈值（默认 5 次）后，自动停用该目标并记录原因。
+
+### 调整
+- 推送文案不再展示“通知分组”字段。
+- Dashboard 返回增加 `disabled_reason` 与 `consecutive_null_brief_count`，用于前端展示停查状态。
+
+### 新增验证
+- 新增最小化测试：验证 `enabled` 参数链路与“连续 5 次自动停查”逻辑。
+- 灰度环境完成套餐监控增删改查接口验证（Create/Read/Update/Delete 全通过）。

@@ -58,7 +58,7 @@ def cmd_get(
 ) -> int:
     rows = list_targets(config)
     idx, err = resolve_target_index(
-        config.get("targets", []),
+        rows,
         activity_id=activity_id,
         index=index,
         name=name,
@@ -86,6 +86,7 @@ def cmd_add(
     name: Optional[str],
     activity_id: Optional[str],
     group_key: Optional[str],
+    enabled: Optional[bool],
     upsert: bool,
     as_json: bool,
 ) -> int:
@@ -96,6 +97,7 @@ def cmd_add(
         activity_id=activity_id,
         group_keys_values=None,
         group_key_value=group_key,
+        enabled=enabled,
         upsert=upsert,
     )
     print_payload(payload, as_json)
@@ -113,6 +115,7 @@ def cmd_update(
     set_url: Optional[str],
     new_activity_id: Optional[str],
     set_group_key: Optional[str],
+    set_enabled: Optional[bool],
     as_json: bool,
 ) -> int:
     payload = update_target(
@@ -126,6 +129,7 @@ def cmd_update(
         new_activity_id=new_activity_id,
         set_group_keys=None,
         set_group_key=set_group_key,
+        set_enabled=set_enabled,
     )
     print_payload(payload, as_json)
     return 0
@@ -174,6 +178,9 @@ def build_parser(default_config: str) -> argparse.ArgumentParser:
     add_p.add_argument("--name")
     add_p.add_argument("--activity-id")
     add_p.add_argument("--group-key")
+    add_p.add_argument("--enabled", dest="enabled", action="store_true")
+    add_p.add_argument("--disabled", dest="enabled", action="store_false")
+    add_p.set_defaults(enabled=None)
     add_p.add_argument("--upsert", action="store_true", help="Update if exists")
     add_p.add_argument("--json", action="store_true", help="Output JSON")
 
@@ -187,6 +194,9 @@ def build_parser(default_config: str) -> argparse.ArgumentParser:
     upd_p.add_argument("--set-url")
     upd_p.add_argument("--new-activity-id")
     upd_p.add_argument("--set-group-key")
+    upd_p.add_argument("--set-enabled", dest="set_enabled", action="store_true")
+    upd_p.add_argument("--set-disabled", dest="set_enabled", action="store_false")
+    upd_p.set_defaults(set_enabled=None)
     upd_p.add_argument("--json", action="store_true", help="Output JSON")
 
     rm_p = sub.add_parser("remove", help="Remove a target by selector")
@@ -236,6 +246,7 @@ def main() -> int:
                 name=args.name,
                 activity_id=args.activity_id,
                 group_key=args.group_key,
+                enabled=args.enabled,
                 upsert=args.upsert,
                 as_json=as_json,
             )
@@ -253,6 +264,7 @@ def main() -> int:
                 set_url=args.set_url,
                 new_activity_id=args.new_activity_id,
                 set_group_key=args.set_group_key,
+                set_enabled=args.set_enabled,
                 as_json=as_json,
             )
             save_config(args.config, config)

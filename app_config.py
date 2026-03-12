@@ -3,6 +3,7 @@ import copy
 import json
 import os
 import re
+import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
@@ -19,6 +20,7 @@ DEFAULT_PROXY_FIELDS = {
     "username": "username",
     "password": "password",
 }
+SQLITE_MONITOR_CONFIG_VERSION = 1
 
 
 class ConfigError(ValueError):
@@ -227,6 +229,199 @@ def ensure_proxy(config: Dict[str, Any]) -> Dict[str, Any]:
     return proxy
 
 
+def get_sqlite_path(config: Dict[str, Any]) -> str:
+    return str(config.get("sqlite_path") or "data/monitor_state.db")
+
+
+def _connect_sqlite(config: Dict[str, Any]) -> sqlite3.Connection:
+    db_path = get_sqlite_path(config)
+    parent = os.path.dirname(os.path.abspath(db_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _ensure_monitor_config_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS monitor_config_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS monitor_notify_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            webhook TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS monitor_targets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            activity_id TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL,
+            group_keys_json TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    existing_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(monitor_targets)")}
+    if "enabled" not in existing_columns:
+        conn.execute("ALTER TABLE monitor_targets ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+
+
+def _get_setting(conn: sqlite3.Connection, key: str) -> Optional[str]:
+    row = conn.execute("SELECT value FROM monitor_config_settings WHERE key = ?", (key,)).fetchone()
+    if not row:
+        return None
+    return str(row["value"])
+
+
+def _set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO monitor_config_settings (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, str(value)),
+    )
+
+
+def _encode_group_keys(group_keys: List[str]) -> str:
+    return json.dumps(_clean_group_key_list(group_keys), ensure_ascii=False)
+
+
+def _decode_group_keys(raw: Any) -> List[str]:
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = []
+    elif isinstance(raw, list):
+        parsed = raw
+    else:
+        parsed = []
+    if not isinstance(parsed, list):
+        return []
+    return _clean_group_key_list(parsed)
+
+
+def _db_group_keys(conn: sqlite3.Connection) -> List[str]:
+    rows = conn.execute("SELECT key FROM monitor_notify_groups ORDER BY sort_order ASC, id ASC").fetchall()
+    return [str(row["key"]) for row in rows]
+
+
+def _db_default_group_key(conn: sqlite3.Connection) -> str:
+    configured = slugify_key(_get_setting(conn, "default_group_key") or "")
+    keys = _db_group_keys(conn)
+    if configured and configured in keys:
+        return configured
+    fallback = keys[0] if keys else DEFAULT_GROUP_KEY
+    _set_setting(conn, "default_group_key", fallback)
+    return fallback
+
+
+def _db_target_rows(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT id, activity_id, name, url, group_keys_json, enabled
+        FROM monitor_targets
+        ORDER BY id ASC
+        """
+    ).fetchall()
+    result: List[Dict[str, Any]] = []
+    for row in rows:
+        group_keys = _decode_group_keys(row["group_keys_json"])
+        result.append(
+            {
+                "id": int(row["id"]),
+                "activity_id": str(row["activity_id"] or "").strip(),
+                "name": str(row["name"] or "").strip(),
+                "url": normalize_target_url(str(row["url"] or "")),
+                "group_keys": group_keys,
+                "group_key": group_keys[0] if group_keys else DEFAULT_GROUP_KEY,
+                "enabled": bool(int(row["enabled"] or 0)),
+            }
+        )
+    return result
+
+
+def ensure_sqlite_monitor_config(config: Dict[str, Any]) -> bool:
+    conn = _connect_sqlite(config)
+    try:
+        _ensure_monitor_config_schema(conn)
+        _set_setting(conn, "schema_version", str(SQLITE_MONITOR_CONFIG_VERSION))
+
+        groups_count = int(conn.execute("SELECT COUNT(*) AS c FROM monitor_notify_groups").fetchone()["c"])
+        targets_count = int(conn.execute("SELECT COUNT(*) AS c FROM monitor_targets").fetchone()["c"])
+        changed = False
+
+        if groups_count == 0:
+            groups = ensure_feishu_groups(config)
+            for idx, group in enumerate(groups, start=1):
+                conn.execute(
+                    """
+                    INSERT INTO monitor_notify_groups (key, name, webhook, sort_order)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        group_key(group),
+                        group_name(group),
+                        group_webhook(group),
+                        idx,
+                    ),
+                )
+            default_group_key = slugify_key(str(ensure_notify(config).get("default_group_key", DEFAULT_GROUP_KEY))) or DEFAULT_GROUP_KEY
+            valid_group_keys = {group_key(group) for group in groups}
+            if default_group_key not in valid_group_keys:
+                default_group_key = groups[0]["key"] if groups else DEFAULT_GROUP_KEY
+            _set_setting(conn, "default_group_key", default_group_key)
+            changed = True
+        else:
+            _db_default_group_key(conn)
+
+        if targets_count == 0:
+            normalize_targets_in_place(config)
+            valid_group_keys = set(_db_group_keys(conn))
+            fallback_group = _db_default_group_key(conn)
+            for target in ensure_targets(config):
+                activity_id = target_activity_id(target)
+                if not activity_id:
+                    continue
+                normalized_group_keys = [key for key in target_group_keys(target, config) if key in valid_group_keys]
+                if not normalized_group_keys:
+                    normalized_group_keys = [fallback_group]
+                conn.execute(
+                    """
+                    INSERT INTO monitor_targets (activity_id, name, url, group_keys_json, enabled)
+                    VALUES (?, ?, ?, ?, 1)
+                    """,
+                    (
+                        activity_id,
+                        target_name(target) or f"target-{activity_id}",
+                        target_url(target),
+                        _encode_group_keys(normalized_group_keys),
+                    ),
+                )
+            changed = True
+
+        conn.commit()
+        return changed
+    finally:
+        conn.close()
+
 
 def group_key(group: Dict[str, Any]) -> str:
     return str(group.get("key", "")).strip()
@@ -406,6 +601,7 @@ def normalize_config_in_place(config: Dict[str, Any]) -> bool:
     ensure_proxy(config)
     ensure_admin_api(config)
     normalize_targets_in_place(config)
+    ensure_sqlite_monitor_config(config)
     after = json.dumps(config, ensure_ascii=False, sort_keys=True)
     return before != after
 
@@ -413,20 +609,16 @@ def normalize_config_in_place(config: Dict[str, Any]) -> bool:
 
 def list_targets(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     normalize_config_in_place(config)
-    rows = []
-    for idx, target in enumerate(ensure_targets(config), start=1):
-        normalized_group_keys = target_group_keys(target, config)
-        rows.append(
-            {
-                "index": idx,
-                "activity_id": target_activity_id(target),
-                "name": target_name(target),
-                "url": target_url(target),
-                "group_keys": normalized_group_keys,
-                "group_key": normalized_group_keys[0],
-            }
-        )
-    return rows
+    conn = _connect_sqlite(config)
+    try:
+        _ensure_monitor_config_schema(conn)
+        rows = _db_target_rows(conn)
+        for idx, row in enumerate(rows, start=1):
+            row["index"] = idx
+            row.pop("id", None)
+        return rows
+    finally:
+        conn.close()
 
 
 
@@ -512,13 +704,17 @@ def ensure_target_name_unique(targets: List[Dict[str, Any]], name: str, current_
 
 
 def ensure_group_exists(config: Dict[str, Any], group_key_value: Optional[str]) -> str:
-    groups = ensure_feishu_groups(config)
-    valid_keys = {group["key"] for group in groups}
-    fallback_key = str(ensure_notify(config).get("default_group_key", DEFAULT_GROUP_KEY))
-    normalized = slugify_key(group_key_value or "") or fallback_key
-    if normalized not in valid_keys:
-        raise ConfigError(f"Unknown notify group: {group_key_value}")
-    return normalized
+    conn = _connect_sqlite(config)
+    try:
+        _ensure_monitor_config_schema(conn)
+        valid_keys = set(_db_group_keys(conn))
+        fallback_key = _db_default_group_key(conn)
+        normalized = slugify_key(group_key_value or "") or fallback_key
+        if normalized not in valid_keys:
+            raise ConfigError(f"Unknown notify group: {group_key_value}")
+        return normalized
+    finally:
+        conn.close()
 
 
 def ensure_groups_exist(
@@ -526,23 +722,27 @@ def ensure_groups_exist(
     group_keys_values: Optional[List[Any]] = None,
     group_key_value: Optional[str] = None,
 ) -> List[str]:
-    groups = ensure_feishu_groups(config)
-    valid_keys = {group["key"] for group in groups}
-    fallback_key = str(ensure_notify(config).get("default_group_key", DEFAULT_GROUP_KEY))
-    candidates: List[Any] = []
-    if isinstance(group_keys_values, list):
-        candidates.extend(group_keys_values)
-    elif group_keys_values is not None:
-        candidates.append(group_keys_values)
-    if not candidates and group_key_value is not None:
-        candidates.append(group_key_value)
-    normalized = _clean_group_key_list(candidates)
-    if not normalized:
-        normalized = [fallback_key]
-    for key in normalized:
-        if key not in valid_keys:
-            raise ConfigError(f"Unknown notify group: {key}")
-    return normalized
+    conn = _connect_sqlite(config)
+    try:
+        _ensure_monitor_config_schema(conn)
+        valid_keys = set(_db_group_keys(conn))
+        fallback_key = _db_default_group_key(conn)
+        candidates: List[Any] = []
+        if isinstance(group_keys_values, list):
+            candidates.extend(group_keys_values)
+        elif group_keys_values is not None:
+            candidates.append(group_keys_values)
+        if not candidates and group_key_value is not None:
+            candidates.append(group_key_value)
+        normalized = _clean_group_key_list(candidates)
+        if not normalized:
+            normalized = [fallback_key]
+        for key in normalized:
+            if key not in valid_keys:
+                raise ConfigError(f"Unknown notify group: {key}")
+        return normalized
+    finally:
+        conn.close()
 
 
 
@@ -554,42 +754,65 @@ def add_target(
     activity_id: Optional[str],
     group_keys_values: Optional[List[Any]],
     group_key_value: Optional[str],
+    enabled: Optional[bool],
     upsert: bool,
 ) -> Dict[str, Any]:
     normalize_config_in_place(config)
-    targets = ensure_targets(config)
-    normalized_url = normalize_target_url(url)
-    aid = parse_activity_id(normalized_url, activity_id)
-    if not aid:
-        raise ConfigError("Cannot parse activity_id from url. Please pass activity_id explicitly.")
-    final_name = str(name or f"target-{aid}").strip()
-    if not final_name:
-        raise ConfigError("Target name cannot be empty.")
-    final_group_keys = ensure_groups_exist(config, group_keys_values, group_key_value)
-    idx = find_target_index(targets, aid)
-    ensure_target_name_unique(targets, final_name, current_index=idx if idx >= 0 else None)
-    new_obj = {
-        "name": final_name,
-        "url": normalized_url,
-        "activity_id": aid,
-        "group_keys": final_group_keys,
-    }
-    if idx >= 0:
-        if not upsert:
-            raise ConfigError(f"Target already exists: activity_id={aid}")
-        targets[idx] = new_obj
-        action = "updated"
-    else:
-        targets.append(new_obj)
-        action = "added"
-    return {
-        "action": action,
-        "target": {
-            **new_obj,
-            "group_key": final_group_keys[0],
-        },
-        "total": len(targets),
-    }
+    conn = _connect_sqlite(config)
+    try:
+        _ensure_monitor_config_schema(conn)
+        targets = _db_target_rows(conn)
+        normalized_url = normalize_target_url(url)
+        aid = parse_activity_id(normalized_url, activity_id)
+        if not aid:
+            raise ConfigError("Cannot parse activity_id from url. Please pass activity_id explicitly.")
+        final_name = str(name or f"target-{aid}").strip()
+        if not final_name:
+            raise ConfigError("Target name cannot be empty.")
+        final_group_keys = ensure_groups_exist(config, group_keys_values, group_key_value)
+        final_enabled = True if enabled is None else bool(enabled)
+        idx = find_target_index(targets, aid)
+        ensure_target_name_unique(targets, final_name, current_index=idx if idx >= 0 else None)
+        new_obj = {
+            "name": final_name,
+            "url": normalized_url,
+            "activity_id": aid,
+            "group_keys": final_group_keys,
+            "enabled": final_enabled,
+        }
+        if idx >= 0:
+            if not upsert:
+                raise ConfigError(f"Target already exists: activity_id={aid}")
+            conn.execute(
+                """
+                UPDATE monitor_targets
+                SET name = ?, url = ?, group_keys_json = ?, enabled = ?
+                WHERE activity_id = ?
+                """,
+                (final_name, normalized_url, _encode_group_keys(final_group_keys), int(final_enabled), aid),
+            )
+            action = "updated"
+        else:
+            conn.execute(
+                """
+                INSERT INTO monitor_targets (activity_id, name, url, group_keys_json, enabled)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (aid, final_name, normalized_url, _encode_group_keys(final_group_keys), int(final_enabled)),
+            )
+            action = "added"
+        conn.commit()
+        total = int(conn.execute("SELECT COUNT(*) AS c FROM monitor_targets").fetchone()["c"])
+        return {
+            "action": action,
+            "target": {
+                **new_obj,
+                "group_key": final_group_keys[0],
+            },
+            "total": total,
+        }
+    finally:
+        conn.close()
 
 
 
@@ -605,57 +828,112 @@ def update_target(
     new_activity_id: Optional[str],
     set_group_keys: Optional[List[Any]],
     set_group_key: Optional[str],
+    set_enabled: Optional[bool],
 ) -> Dict[str, Any]:
     normalize_config_in_place(config)
-    targets = ensure_targets(config)
-    idx, err = resolve_target_index(
-        targets,
-        activity_id=activity_id,
-        index=index,
-        name=selector_name,
-        url=selector_url,
-    )
-    if idx < 0:
-        raise ConfigError(err or "Target not found")
-    if set_name is None and set_url is None and new_activity_id is None and set_group_keys is None and set_group_key is None:
-        raise ConfigError("No update fields provided.")
+    conn = _connect_sqlite(config)
+    try:
+        _ensure_monitor_config_schema(conn)
+        targets = _db_target_rows(conn)
+        idx, err = resolve_target_index(
+            targets,
+            activity_id=activity_id,
+            index=index,
+            name=selector_name,
+            url=selector_url,
+        )
+        if idx < 0:
+            raise ConfigError(err or "Target not found")
+        if (
+            set_name is None
+            and set_url is None
+            and new_activity_id is None
+            and set_group_keys is None
+            and set_group_key is None
+            and set_enabled is None
+        ):
+            raise ConfigError("No update fields provided.")
 
-    cur = dict(targets[idx])
-    current_activity_id = target_activity_id(cur) or ""
-    final_url = normalize_target_url(set_url) if set_url is not None else target_url(cur)
-    parsed_from_url = parse_activity_id(final_url)
-    final_activity_id = str(new_activity_id).strip() if new_activity_id else (parsed_from_url or current_activity_id)
-    if not final_activity_id:
-        raise ConfigError("Cannot determine final activity_id.")
-    if final_activity_id != current_activity_id:
-        existing_idx = find_target_index(targets, final_activity_id)
-        if existing_idx >= 0 and existing_idx != idx:
-            raise ConfigError(f"Cannot update: target with activity_id={final_activity_id} already exists.")
-    if set_name is not None:
-        final_name = str(set_name).strip()
-        if not final_name:
-            raise ConfigError("Target name cannot be empty.")
-        ensure_target_name_unique(targets, final_name, current_index=idx)
-        cur["name"] = final_name
-    if set_url is not None:
-        cur["url"] = final_url
-    if set_group_keys is not None or set_group_key is not None:
-        cur["group_keys"] = ensure_groups_exist(config, set_group_keys, set_group_key)
-        cur.pop("group_key", None)
-    cur["activity_id"] = final_activity_id
-    targets[idx] = cur
-    return {
-        "action": "updated",
-        "old_activity_id": current_activity_id,
-        "target": {
-            "index": idx + 1,
-            "activity_id": target_activity_id(cur),
-            "name": target_name(cur),
-            "url": target_url(cur),
-            "group_keys": target_group_keys(cur, config),
-            "group_key": target_group_key(cur, config),
-        },
-    }
+        cur = dict(targets[idx])
+        target_row_id = int(cur["id"])
+        current_activity_id = target_activity_id(cur) or ""
+        final_url = normalize_target_url(set_url) if set_url is not None else target_url(cur)
+        parsed_from_url = parse_activity_id(final_url)
+        final_activity_id = str(new_activity_id).strip() if new_activity_id else (parsed_from_url or current_activity_id)
+        if not final_activity_id:
+            raise ConfigError("Cannot determine final activity_id.")
+        if final_activity_id != current_activity_id:
+            existing_idx = find_target_index(targets, final_activity_id)
+            if existing_idx >= 0 and existing_idx != idx:
+                raise ConfigError(f"Cannot update: target with activity_id={final_activity_id} already exists.")
+        if set_name is not None:
+            final_name = str(set_name).strip()
+            if not final_name:
+                raise ConfigError("Target name cannot be empty.")
+            ensure_target_name_unique(targets, final_name, current_index=idx)
+            cur["name"] = final_name
+        if set_url is not None:
+            cur["url"] = final_url
+        if set_group_keys is not None or set_group_key is not None:
+            cur["group_keys"] = ensure_groups_exist(config, set_group_keys, set_group_key)
+            cur.pop("group_key", None)
+        if set_enabled is not None:
+            cur["enabled"] = bool(set_enabled)
+        cur["activity_id"] = final_activity_id
+        final_group_keys = target_group_keys(cur, config)
+        conn.execute(
+            """
+            UPDATE monitor_targets
+            SET activity_id = ?, name = ?, url = ?, group_keys_json = ?, enabled = ?
+            WHERE id = ?
+            """,
+            (
+                final_activity_id,
+                target_name(cur),
+                target_url(cur),
+                _encode_group_keys(final_group_keys),
+                int(bool(cur.get("enabled", True))),
+                target_row_id,
+            ),
+        )
+        if set_enabled is not None:
+            try:
+                if bool(set_enabled):
+                    conn.execute(
+                        """
+                        UPDATE target_state
+                        SET disabled_reason = NULL, consecutive_null_brief_count = 0
+                        WHERE activity_id = ?
+                        """,
+                        (final_activity_id,),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE target_state
+                        SET disabled_reason = 'manually_disabled'
+                        WHERE activity_id = ?
+                        """,
+                        (final_activity_id,),
+                    )
+            except sqlite3.OperationalError:
+                pass
+        conn.commit()
+        return {
+            "action": "updated",
+            "old_activity_id": current_activity_id,
+            "target": {
+                "index": idx + 1,
+                "activity_id": target_activity_id(cur),
+                "name": target_name(cur),
+                "url": target_url(cur),
+                "group_keys": target_group_keys(cur, config),
+                "group_key": target_group_key(cur, config),
+                "enabled": bool(cur.get("enabled", True)),
+            },
+        }
+    finally:
+        conn.close()
 
 
 
@@ -668,29 +946,38 @@ def remove_target(
     url: Optional[str],
 ) -> Dict[str, Any]:
     normalize_config_in_place(config)
-    targets = ensure_targets(config)
-    idx, err = resolve_target_index(
-        targets,
-        activity_id=activity_id,
-        index=index,
-        name=name,
-        url=url,
-    )
-    if idx < 0:
-        raise ConfigError(err or "Target not found")
-    removed = targets.pop(idx)
-    return {
-        "action": "removed",
-        "target": {
-            "index": idx + 1,
-            "activity_id": target_activity_id(removed),
-            "name": target_name(removed),
-            "url": target_url(removed),
-            "group_keys": target_group_keys(removed, config),
-            "group_key": target_group_key(removed, config),
-        },
-        "total": len(targets),
-    }
+    conn = _connect_sqlite(config)
+    try:
+        _ensure_monitor_config_schema(conn)
+        targets = _db_target_rows(conn)
+        idx, err = resolve_target_index(
+            targets,
+            activity_id=activity_id,
+            index=index,
+            name=name,
+            url=url,
+        )
+        if idx < 0:
+            raise ConfigError(err or "Target not found")
+        removed = dict(targets[idx])
+        removed_row_id = int(removed["id"])
+        conn.execute("DELETE FROM monitor_targets WHERE id = ?", (removed_row_id,))
+        conn.commit()
+        total = int(conn.execute("SELECT COUNT(*) AS c FROM monitor_targets").fetchone()["c"])
+        return {
+            "action": "removed",
+            "target": {
+                "index": idx + 1,
+                "activity_id": target_activity_id(removed),
+                "name": target_name(removed),
+                "url": target_url(removed),
+                "group_keys": target_group_keys(removed, config),
+                "group_key": target_group_key(removed, config),
+            },
+            "total": total,
+        }
+    finally:
+        conn.close()
 
 
 
@@ -705,52 +992,79 @@ def find_group_index(groups: List[Dict[str, Any]], key_value: str) -> int:
 
 def list_notify_groups(config: Dict[str, Any], include_secret: bool = False) -> List[Dict[str, Any]]:
     normalize_config_in_place(config)
-    groups = ensure_feishu_groups(config)
-    default_group_key = str(ensure_notify(config).get("default_group_key", DEFAULT_GROUP_KEY))
-    rows = []
-    for group in groups:
-        webhook = group_webhook(group)
-        rows.append(
-            {
-                "key": group_key(group),
-                "name": group_name(group),
-                "is_default": group_key(group) == default_group_key,
-                "webhook": webhook if include_secret else "",
-                "webhook_masked": mask_secret(webhook),
-                "webhook_configured": bool(webhook),
-            }
-        )
-    return rows
+    conn = _connect_sqlite(config)
+    try:
+        _ensure_monitor_config_schema(conn)
+        default_group_key = _db_default_group_key(conn)
+        rows = conn.execute(
+            """
+            SELECT key, name, webhook
+            FROM monitor_notify_groups
+            ORDER BY sort_order ASC, id ASC
+            """
+        ).fetchall()
+        groups = []
+        for row in rows:
+            webhook = str(row["webhook"] or "").strip()
+            groups.append(
+                {
+                    "key": str(row["key"] or "").strip(),
+                    "name": str(row["name"] or "").strip(),
+                    "is_default": str(row["key"] or "").strip() == default_group_key,
+                    "webhook": webhook if include_secret else "",
+                    "webhook_masked": mask_secret(webhook),
+                    "webhook_configured": bool(webhook),
+                }
+            )
+        return groups
+    finally:
+        conn.close()
 
 
 
 def add_notify_group(config: Dict[str, Any], *, key_value: Optional[str], name: str, webhook: str) -> Dict[str, Any]:
     normalize_config_in_place(config)
-    groups = ensure_feishu_groups(config)
-    final_name = str(name or "").strip()
-    if not final_name:
-        raise ConfigError("Group name cannot be empty.")
-    base_key = slugify_key(key_value or final_name)
-    if not base_key:
-        base_key = f"group-{len(groups) + 1}"
-    final_key = base_key
-    suffix = 2
-    while find_group_index(groups, final_key) >= 0:
-        final_key = f"{base_key}-{suffix}"
-        suffix += 1
-    group = {"key": final_key, "name": final_name, "webhook": str(webhook or "").strip()}
-    groups.append(group)
-    return {
-        "action": "added",
-        "group": {
-            "key": final_key,
-            "name": final_name,
-            "webhook_masked": mask_secret(group["webhook"]),
-            "webhook_configured": bool(group["webhook"]),
-            "is_default": False,
-        },
-        "total": len(groups),
-    }
+    conn = _connect_sqlite(config)
+    try:
+        _ensure_monitor_config_schema(conn)
+        groups = conn.execute("SELECT key FROM monitor_notify_groups ORDER BY sort_order ASC, id ASC").fetchall()
+        final_name = str(name or "").strip()
+        if not final_name:
+            raise ConfigError("Group name cannot be empty.")
+        base_key = slugify_key(key_value or final_name)
+        if not base_key:
+            base_key = f"group-{len(groups) + 1}"
+        final_key = base_key
+        suffix = 2
+        existing_keys = {str(row["key"]) for row in groups}
+        while final_key in existing_keys:
+            final_key = f"{base_key}-{suffix}"
+            suffix += 1
+        final_webhook = str(webhook or "").strip()
+        max_sort_order_row = conn.execute("SELECT COALESCE(MAX(sort_order), 0) AS max_order FROM monitor_notify_groups").fetchone()
+        next_sort_order = int(max_sort_order_row["max_order"]) + 1
+        conn.execute(
+            """
+            INSERT INTO monitor_notify_groups (key, name, webhook, sort_order)
+            VALUES (?, ?, ?, ?)
+            """,
+            (final_key, final_name, final_webhook, next_sort_order),
+        )
+        conn.commit()
+        total = int(conn.execute("SELECT COUNT(*) AS c FROM monitor_notify_groups").fetchone()["c"])
+        return {
+            "action": "added",
+            "group": {
+                "key": final_key,
+                "name": final_name,
+                "webhook_masked": mask_secret(final_webhook),
+                "webhook_configured": bool(final_webhook),
+                "is_default": False,
+            },
+            "total": total,
+        }
+    finally:
+        conn.close()
 
 
 
@@ -763,70 +1077,112 @@ def update_notify_group(
     make_default: Optional[bool],
 ) -> Dict[str, Any]:
     normalize_config_in_place(config)
-    groups = ensure_feishu_groups(config)
-    notify = ensure_notify(config)
-    idx = find_group_index(groups, key_value)
-    if idx < 0:
-        raise ConfigError(f"Notify group not found: key={key_value}")
-    if set_name is None and set_webhook is None and make_default is None:
-        raise ConfigError("No update fields provided.")
-    group = dict(groups[idx])
-    if set_name is not None:
-        final_name = str(set_name).strip()
-        if not final_name:
-            raise ConfigError("Group name cannot be empty.")
-        group["name"] = final_name
-    if set_webhook is not None:
-        group["webhook"] = str(set_webhook or "").strip()
-    groups[idx] = group
-    if make_default:
-        notify["default_group_key"] = group["key"]
-    return {
-        "action": "updated",
-        "group": {
-            "key": group["key"],
-            "name": group["name"],
-            "webhook_masked": mask_secret(group.get("webhook", "")),
-            "webhook_configured": bool(group.get("webhook", "")),
-            "is_default": group["key"] == notify.get("default_group_key"),
-        },
-    }
+    conn = _connect_sqlite(config)
+    try:
+        _ensure_monitor_config_schema(conn)
+        normalized_key = slugify_key(key_value) or str(key_value or "").strip()
+        row = conn.execute(
+            "SELECT id, key, name, webhook FROM monitor_notify_groups WHERE key = ?",
+            (normalized_key,),
+        ).fetchone()
+        if not row:
+            raise ConfigError(f"Notify group not found: key={key_value}")
+        if set_name is None and set_webhook is None and make_default is None:
+            raise ConfigError("No update fields provided.")
+        group_key_value = str(row["key"] or "").strip()
+        group_name_value = str(row["name"] or "").strip()
+        group_webhook_value = str(row["webhook"] or "").strip()
+        if set_name is not None:
+            final_name = str(set_name).strip()
+            if not final_name:
+                raise ConfigError("Group name cannot be empty.")
+            group_name_value = final_name
+        if set_webhook is not None:
+            group_webhook_value = str(set_webhook or "").strip()
+        conn.execute(
+            """
+            UPDATE monitor_notify_groups
+            SET name = ?, webhook = ?
+            WHERE key = ?
+            """,
+            (group_name_value, group_webhook_value, group_key_value),
+        )
+        if make_default:
+            _set_setting(conn, "default_group_key", group_key_value)
+        default_group_key = _db_default_group_key(conn)
+        conn.commit()
+        return {
+            "action": "updated",
+            "group": {
+                "key": group_key_value,
+                "name": group_name_value,
+                "webhook_masked": mask_secret(group_webhook_value),
+                "webhook_configured": bool(group_webhook_value),
+                "is_default": group_key_value == default_group_key,
+            },
+        }
+    finally:
+        conn.close()
 
 
 
 def remove_notify_group(config: Dict[str, Any], *, key_value: str) -> Dict[str, Any]:
     normalize_config_in_place(config)
-    groups = ensure_feishu_groups(config)
-    notify = ensure_notify(config)
-    idx = find_group_index(groups, key_value)
-    if idx < 0:
-        raise ConfigError(f"Notify group not found: key={key_value}")
-    if len(groups) == 1:
-        raise ConfigError("Cannot remove the last notify group.")
-    removed = groups.pop(idx)
-    default_group_key = str(notify.get("default_group_key", DEFAULT_GROUP_KEY))
-    if removed["key"] == default_group_key:
-        notify["default_group_key"] = groups[0]["key"]
-    reassigned_group_key = str(notify.get("default_group_key", groups[0]["key"]))
-    for target in ensure_targets(config):
-        current_keys = target_group_keys(target, config)
-        if removed["key"] not in current_keys:
-            continue
-        next_keys = [key for key in current_keys if key != removed["key"]]
-        if not next_keys:
-            next_keys = [reassigned_group_key]
-        target["group_keys"] = next_keys
-        target.pop("group_key", None)
-        target.pop("notify_group_key", None)
-    return {
-        "action": "removed",
-        "group": {
-            "key": removed["key"],
-            "name": removed["name"],
-        },
-        "reassigned_group_key": reassigned_group_key,
-        "total": len(groups),
-    }
+    conn = _connect_sqlite(config)
+    try:
+        _ensure_monitor_config_schema(conn)
+        normalized_key = slugify_key(key_value) or str(key_value or "").strip()
+        groups = conn.execute(
+            """
+            SELECT id, key, name
+            FROM monitor_notify_groups
+            ORDER BY sort_order ASC, id ASC
+            """
+        ).fetchall()
+        if not groups:
+            raise ConfigError("Notify groups is empty.")
+        group_rows = [dict(row) for row in groups]
+        idx = next((i for i, row in enumerate(group_rows) if str(row["key"]) == normalized_key), -1)
+        if idx < 0:
+            raise ConfigError(f"Notify group not found: key={key_value}")
+        if len(group_rows) == 1:
+            raise ConfigError("Cannot remove the last notify group.")
+
+        removed = group_rows[idx]
+        remaining = [row for row in group_rows if int(row["id"]) != int(removed["id"])]
+        default_group_key = _db_default_group_key(conn)
+        reassigned_group_key = default_group_key
+        if removed["key"] == default_group_key:
+            reassigned_group_key = str(remaining[0]["key"])
+            _set_setting(conn, "default_group_key", reassigned_group_key)
+
+        target_rows = conn.execute("SELECT id, group_keys_json FROM monitor_targets").fetchall()
+        for row in target_rows:
+            current_keys = _decode_group_keys(row["group_keys_json"])
+            if str(removed["key"]) not in current_keys:
+                continue
+            next_keys = [key for key in current_keys if key != str(removed["key"])]
+            if not next_keys:
+                next_keys = [reassigned_group_key]
+            conn.execute(
+                "UPDATE monitor_targets SET group_keys_json = ? WHERE id = ?",
+                (_encode_group_keys(next_keys), int(row["id"])),
+            )
+
+        conn.execute("DELETE FROM monitor_notify_groups WHERE id = ?", (int(removed["id"]),))
+        conn.commit()
+        total = int(conn.execute("SELECT COUNT(*) AS c FROM monitor_notify_groups").fetchone()["c"])
+        return {
+            "action": "removed",
+            "group": {
+                "key": str(removed["key"]),
+                "name": str(removed["name"]),
+            },
+            "reassigned_group_key": reassigned_group_key,
+            "total": total,
+        }
+    finally:
+        conn.close()
 
 
 
@@ -898,12 +1254,12 @@ def resolve_target_feishu_webhook(config: Dict[str, Any], target: Dict[str, Any]
 
 def resolve_target_feishu_webhooks(config: Dict[str, Any], target: Dict[str, Any]) -> List[str]:
     notify = ensure_notify(config)
-    group_lookup = {group["key"]: group for group in ensure_feishu_groups(config)}
+    group_lookup = {group["key"]: group for group in list_notify_groups(config, include_secret=True)}
     resolved: List[str] = []
     seen = set()
     for desired_group in target_group_keys(target, config):
         group = group_lookup.get(desired_group)
-        webhook = group_webhook(group) if group else ""
+        webhook = str((group or {}).get("webhook") or "").strip()
         if webhook and webhook not in seen:
             resolved.append(webhook)
             seen.add(webhook)
@@ -912,7 +1268,7 @@ def resolve_target_feishu_webhooks(config: Dict[str, Any], target: Dict[str, Any
     legacy = str(notify.get("feishu_webhook", "")).strip()
     if legacy:
         return [legacy]
-    default_group = group_lookup.get(str(notify.get("default_group_key", DEFAULT_GROUP_KEY)))
-    if default_group and group_webhook(default_group):
-        return [group_webhook(default_group)]
+    default_group = next((group for group in group_lookup.values() if bool(group.get("is_default"))), None)
+    if default_group and str(default_group.get("webhook", "")).strip():
+        return [str(default_group.get("webhook", "")).strip()]
     return []

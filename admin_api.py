@@ -990,9 +990,9 @@ class AdminApiHandler(BaseHTTPRequestHandler):
                 activity_id=payload.get("activity_id"),
                 group_keys_values=payload.get("group_keys"),
                 group_key_value=payload.get("group_key"),
+                enabled=payload.get("enabled"),
                 upsert=bool(payload.get("upsert", False)),
             )
-            save_config(self.server.config_path, config)
             auth_store.write_audit_log(
                 actor=context,
                 action="create",
@@ -1020,8 +1020,8 @@ class AdminApiHandler(BaseHTTPRequestHandler):
                 new_activity_id=payload.get("new_activity_id"),
                 set_group_keys=payload.get("set_group_keys"),
                 set_group_key=payload.get("set_group_key"),
+                set_enabled=payload.get("set_enabled"),
             )
-            save_config(self.server.config_path, config)
             auth_store.write_audit_log(
                 actor=context,
                 action="update",
@@ -1040,7 +1040,6 @@ class AdminApiHandler(BaseHTTPRequestHandler):
                 name=None,
                 url=None,
             )
-            save_config(self.server.config_path, config)
             auth_store.write_audit_log(
                 actor=context,
                 action="delete",
@@ -1071,7 +1070,6 @@ class AdminApiHandler(BaseHTTPRequestHandler):
                 name=str(payload.get("name") or "").strip(),
                 webhook=str(payload.get("webhook") or "").strip(),
             )
-            save_config(self.server.config_path, config)
             auth_store.write_audit_log(
                 actor=context,
                 action="create",
@@ -1094,7 +1092,6 @@ class AdminApiHandler(BaseHTTPRequestHandler):
                 set_webhook=payload.get("set_webhook"),
                 make_default=True if payload.get("make_default") else None,
             )
-            save_config(self.server.config_path, config)
             auth_store.write_audit_log(
                 actor=context,
                 action="update",
@@ -1106,7 +1103,6 @@ class AdminApiHandler(BaseHTTPRequestHandler):
             return result
         if method == "DELETE":
             result = remove_notify_group(config, key_value=key_value)
-            save_config(self.server.config_path, config)
             auth_store.write_audit_log(
                 actor=context,
                 action="delete",
@@ -1252,6 +1248,8 @@ class AdminApiHandler(BaseHTTPRequestHandler):
                     "last_error_text": state.get("last_error_text") or "",
                     "last_error_streak": int(state.get("last_error_streak") or 0),
                     "fail_count": int(state.get("fail_count") or 0),
+                    "disabled_reason": state.get("disabled_reason") or "",
+                    "consecutive_null_brief_count": int(state.get("consecutive_null_brief_count") or 0),
                 }
             )
         return enriched
@@ -1262,13 +1260,23 @@ class AdminApiHandler(BaseHTTPRequestHandler):
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         try:
-            rows = conn.execute(
-                """
-                SELECT activity_id, last_state, last_sold_out, last_title, last_change_ts,
-                       last_error_text, last_error_streak, fail_count
-                FROM target_state
-                """
-            ).fetchall()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT activity_id, last_state, last_sold_out, last_title, last_change_ts,
+                           last_error_text, last_error_streak, fail_count,
+                           disabled_reason, consecutive_null_brief_count
+                    FROM target_state
+                    """
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = conn.execute(
+                    """
+                    SELECT activity_id, last_state, last_sold_out, last_title, last_change_ts,
+                           last_error_text, last_error_streak, fail_count
+                    FROM target_state
+                    """
+                ).fetchall()
             return {str(row["activity_id"]): dict(row) for row in rows}
         except sqlite3.OperationalError:
             return {}

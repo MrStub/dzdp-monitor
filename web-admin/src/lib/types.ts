@@ -13,6 +13,7 @@ export interface TargetItem {
   name: string;
   url: string;
   activity_id: string;
+  enabled: boolean;
   group_keys: string[];
   group_key: string;
   group_names?: string[];
@@ -24,6 +25,8 @@ export interface TargetItem {
   last_error_text: string;
   last_error_streak: number;
   fail_count: number;
+  disabled_reason: string;
+  consecutive_null_brief_count: number;
 }
 
 export interface NotifyGroup {

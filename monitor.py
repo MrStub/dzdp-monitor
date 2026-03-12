@@ -121,6 +121,7 @@ class Target:
     url: str
     activity_id: str
     group_keys: List[str]
+    enabled: bool = True
 
     def to_config_target(self) -> Dict[str, Any]:
         return {
@@ -128,6 +129,7 @@ class Target:
             "url": self.url,
             "activity_id": self.activity_id,
             "group_keys": self.group_keys,
+            "enabled": self.enabled,
         }
 
 
@@ -137,6 +139,8 @@ class FailureRecord:
     error_streak: int
     already_alerted_today: bool
     alert_date: str
+    consecutive_null_brief_count: int = 0
+    auto_disabled: bool = False
 
 
 class StateStore:
@@ -161,7 +165,9 @@ class StateStore:
                 last_error_text TEXT,
                 last_error_date TEXT,
                 last_error_streak INTEGER NOT NULL DEFAULT 0,
-                fail_count INTEGER NOT NULL DEFAULT 0
+                fail_count INTEGER NOT NULL DEFAULT 0,
+                disabled_reason TEXT,
+                consecutive_null_brief_count INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -170,6 +176,8 @@ class StateStore:
             "last_error_text": "TEXT",
             "last_error_date": "TEXT",
             "last_error_streak": "INTEGER NOT NULL DEFAULT 0",
+            "disabled_reason": "TEXT",
+            "consecutive_null_brief_count": "INTEGER NOT NULL DEFAULT 0",
         }
         for column_name, column_type in required_columns.items():
             if column_name not in existing_columns:
@@ -212,8 +220,9 @@ class StateStore:
             INSERT INTO target_state (
                 activity_id, target_name, target_url, last_state, last_sold_out,
                 last_title, last_payload_json, last_change_ts,
-                last_error_text, last_error_date, last_error_streak, fail_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, 0)
+                last_error_text, last_error_date, last_error_streak, fail_count,
+                disabled_reason, consecutive_null_brief_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, 0, NULL, 0)
             ON CONFLICT(activity_id) DO UPDATE SET
                 target_name=excluded.target_name,
                 target_url=excluded.target_url,
@@ -225,7 +234,9 @@ class StateStore:
                 last_error_text=NULL,
                 last_error_date=NULL,
                 last_error_streak=0,
-                fail_count=0
+                fail_count=0,
+                disabled_reason=NULL,
+                consecutive_null_brief_count=0
             """,
             (
                 target.activity_id,
@@ -254,8 +265,9 @@ class StateStore:
                 """
                 INSERT INTO target_state (
                     activity_id, target_name, target_url,
-                    last_error_text, last_error_date, last_error_streak, fail_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    last_error_text, last_error_date, last_error_streak, fail_count,
+                    disabled_reason, consecutive_null_brief_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0)
                 """,
                 (
                     target.activity_id,
@@ -272,7 +284,7 @@ class StateStore:
                 """
                 UPDATE target_state
                 SET target_name=?, target_url=?, last_error_text=?, last_error_date=?,
-                    last_error_streak=?, fail_count=?
+                    last_error_streak=?, fail_count=?, consecutive_null_brief_count=0
                 WHERE activity_id=?
                 """,
                 (
@@ -291,6 +303,84 @@ class StateStore:
             error_streak=error_streak,
             already_alerted_today=self.has_error_alerted_today(target.activity_id, error_text, alert_date),
             alert_date=alert_date,
+            consecutive_null_brief_count=0,
+        )
+
+    def _set_target_enabled(self, activity_id: str, enabled: bool) -> None:
+        try:
+            self.conn.execute(
+                "UPDATE monitor_targets SET enabled = ? WHERE activity_id = ?",
+                (int(bool(enabled)), activity_id),
+            )
+        except sqlite3.OperationalError:
+            return
+
+    def record_unavailable_signal_failure(self, target: Target, error_text: str, *, threshold: int = 5) -> FailureRecord:
+        row = self.get(target.activity_id)
+        fail_count = 1 if row is None else int(row["fail_count"] or 0) + 1
+        alert_date = today_local()
+        previous_error_text = "" if row is None else str(row["last_error_text"] or "")
+        previous_error_date = "" if row is None else str(row["last_error_date"] or "")
+        previous_error_streak = 0 if row is None else int(row["last_error_streak"] or 0)
+        previous_consecutive = 0 if row is None else int(row["consecutive_null_brief_count"] or 0)
+        error_streak = previous_error_streak + 1 if previous_error_text == error_text and previous_error_date == alert_date else 1
+        consecutive_null_brief_count = previous_consecutive + 1
+        auto_disabled = consecutive_null_brief_count >= max(1, int(threshold or 5))
+        disabled_reason = "brief_null_or_login_required_auto_disabled" if auto_disabled else ""
+
+        if row is None:
+            self.conn.execute(
+                """
+                INSERT INTO target_state (
+                    activity_id, target_name, target_url,
+                    last_error_text, last_error_date, last_error_streak, fail_count,
+                    disabled_reason, consecutive_null_brief_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    target.activity_id,
+                    target.name,
+                    target.url,
+                    error_text,
+                    alert_date,
+                    error_streak,
+                    fail_count,
+                    disabled_reason or None,
+                    consecutive_null_brief_count,
+                ),
+            )
+        else:
+            self.conn.execute(
+                """
+                UPDATE target_state
+                SET target_name=?, target_url=?, last_error_text=?, last_error_date=?,
+                    last_error_streak=?, fail_count=?, disabled_reason=?, consecutive_null_brief_count=?
+                WHERE activity_id=?
+                """,
+                (
+                    target.name,
+                    target.url,
+                    error_text,
+                    alert_date,
+                    error_streak,
+                    fail_count,
+                    disabled_reason or None,
+                    consecutive_null_brief_count,
+                    target.activity_id,
+                ),
+            )
+
+        if auto_disabled:
+            self._set_target_enabled(target.activity_id, False)
+
+        self.conn.commit()
+        return FailureRecord(
+            fail_count=fail_count,
+            error_streak=error_streak,
+            already_alerted_today=self.has_error_alerted_today(target.activity_id, error_text, alert_date),
+            alert_date=alert_date,
+            consecutive_null_brief_count=consecutive_null_brief_count,
+            auto_disabled=auto_disabled,
         )
 
     def has_error_alerted_today(self, activity_id: str, error_text: str, alert_date: Optional[str] = None) -> bool:
@@ -431,23 +521,29 @@ def fetch_product_brief(
     timeout_seconds: int,
     *,
     proxies: Optional[Dict[str, str]] = None,
-) -> Tuple[bool, Dict[str, Any], str]:
+) -> Tuple[bool, Dict[str, Any], str, bool]:
     params = {"activityId": activity_id, "source": "share"}
     try:
         resp = session.get(API_ENDPOINT, params=params, timeout=timeout_seconds, proxies=proxies)
         resp.raise_for_status()
         data = resp.json()
     except Exception as exc:  # noqa: BLE001
-        return False, {}, f"request error: {exc}"
+        return False, {}, f"request error: {exc}", False
 
     if data.get("code") != 200:
-        return False, data, f"api code != 200, code={data.get('code')} msg={data.get('msg')}"
+        text = json.dumps(data, ensure_ascii=False)
+        needs_login = any(key in text for key in ("登录", "未登录", "请登录")) or "login" in text.lower()
+        return False, data, f"api code != 200, code={data.get('code')} msg={data.get('msg')}", needs_login
 
     product = ((data.get("data") or {}).get("productBriefInfo")) or None
     if not product:
-        return False, data, "productBriefInfo is null (可能是链接类型不匹配或需要登录态)"
+        text = json.dumps(data, ensure_ascii=False)
+        needs_login = any(key in text for key in ("登录", "未登录", "请登录")) or "login" in text.lower()
+        if needs_login:
+            return False, data, "productBriefInfo is null / 需要登录态（视为下架或不可用信号）", True
+        return False, data, "productBriefInfo is null（视为下架或不可用信号）", True
 
-    return True, product, ""
+    return True, product, "", False
 
 
 def format_target_groups(target: Target) -> str:
@@ -463,7 +559,6 @@ def render_product_summary(target: Target, product: Dict[str, Any], state: str) 
     lines = [
         f"监控项: {target.name}",
         f"活动ID: {target.activity_id}",
-        f"通知分组: {format_target_groups(target)}",
         f"库存状态: {state_to_cn(state)}",
         f"套餐名称: {product.get('title') or '-'}",
         (
@@ -497,7 +592,6 @@ def render_in_stock_alert(target: Target, product: Dict[str, Any]) -> str:
     lines = [
         "检测到套餐有货",
         f"套餐名: {configured_name}",
-        f"通知分组: {format_target_groups(target)}",
     ]
     if api_title and api_title != configured_name:
         lines.append(f"接口名称: {api_title}")
@@ -513,7 +607,6 @@ def render_failure_alert(target: Target, error_text: str, error_streak: int) -> 
     lines = [
         "监控异常",
         f"监控项: {target.name}",
-        f"通知分组: {format_target_groups(target)}",
         f"链接: {target.url}",
         f"相同报错当日连续次数: {error_streak}",
         f"错误: {error_text}",
@@ -539,9 +632,10 @@ def build_targets(config: Dict[str, Any]) -> List[Target]:
                 url=str(row.get("url") or "").strip(),
                 activity_id=activity_id,
                 group_keys=[str(value).strip() for value in (row.get("group_keys") or []) if str(value).strip()],
+                enabled=bool(row.get("enabled", True)),
             )
         )
-    return targets
+    return [target for target in targets if target.enabled]
 
 
 def run_cycle(
@@ -560,8 +654,21 @@ def run_cycle(
     notify_on_first_seen = bool(alerts_cfg.get("notify_on_first_seen", True))
     failure_threshold = max(1, int(alerts_cfg.get("failure_threshold", 5)))
     notify_failures = bool(alerts_cfg.get("notify_failures", False))
+    unavailable_disable_threshold = max(1, int(alerts_cfg.get("unavailable_disable_threshold", 5)))
 
     for idx, target in enumerate(targets):
+        existing_state = store.get(target.activity_id)
+        disabled_reason = str(existing_state["disabled_reason"] or "").strip() if existing_state else ""
+        if disabled_reason:
+            logging.info(
+                "[%s] skip request because disabled_reason=%s",
+                target.name,
+                disabled_reason,
+            )
+            if idx < len(targets) - 1 and jitter_seconds > 0:
+                time.sleep(random.uniform(0, jitter_seconds))
+            continue
+
         session.headers["User-Agent"] = resolve_user_agent(config, target.activity_id)
 
         try:
@@ -586,16 +693,30 @@ def run_cycle(
                 time.sleep(random.uniform(0, jitter_seconds))
             continue
 
-        ok, data, err = fetch_product_brief(session, target.activity_id, timeout_seconds, proxies=proxies)
+        ok, data, err, unavailable_signal = fetch_product_brief(session, target.activity_id, timeout_seconds, proxies=proxies)
         if not ok:
-            failure = store.record_failure(target, err)
+            if unavailable_signal:
+                failure = store.record_unavailable_signal_failure(
+                    target,
+                    err,
+                    threshold=unavailable_disable_threshold,
+                )
+            else:
+                failure = store.record_failure(target, err)
             logging.warning(
-                "[%s] check failed (fail_count=%s same_error_streak=%s): %s",
+                "[%s] check failed (fail_count=%s same_error_streak=%s null_brief_streak=%s): %s",
                 target.name,
                 failure.fail_count,
                 failure.error_streak,
+                failure.consecutive_null_brief_count,
                 err,
             )
+            if failure.auto_disabled:
+                logging.warning(
+                    "[%s] disabled after unavailable signal streak reached %s",
+                    target.name,
+                    failure.consecutive_null_brief_count,
+                )
             should_alert = notify_failures and failure.error_streak >= failure_threshold and not failure.already_alerted_today
             if should_alert:
                 subject = f"[点评库存监控异常] {target.name}"
@@ -612,7 +733,7 @@ def run_cycle(
         state = stock_state_from_sold_out(sold_out)
         title = str(product.get("title") or "")
 
-        old = store.get(target.activity_id)
+        old = existing_state
         old_state = old["last_state"] if old else None
         changed = old_state != state
 

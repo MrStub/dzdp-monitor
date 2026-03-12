@@ -103,6 +103,7 @@ type TargetForm = {
   name: string;
   url: string;
   group_keys: string[];
+  enabled: boolean;
 };
 
 type GroupForm = {
@@ -291,8 +292,8 @@ function normalizePermissions(raw: unknown, fallback: UserPermissions): UserPerm
 }
 
 
-function createTargetForm(groupKeys: string[] = []): TargetForm {
-  return { name: "", url: "", group_keys: groupKeys };
+function createTargetForm(groupKeys: string[] = [], enabled = true): TargetForm {
+  return { name: "", url: "", group_keys: groupKeys, enabled };
 }
 
 function normalizeTargetGroupKeys(target: Pick<TargetItem, "group_keys" | "group_key">) {
@@ -824,6 +825,7 @@ export default function App() {
       name: target.name,
       url: target.url,
       group_keys: normalizeTargetGroupKeys(target),
+      enabled: target.enabled,
     });
     setShowAddTargetModal(true);
   }
@@ -841,10 +843,11 @@ export default function App() {
           method: "PATCH",
           body: JSON.stringify({
             set_name: targetForm.name,
-            set_url: targetForm.url,
-            set_group_keys: targetForm.group_keys,
-          }),
-        });
+                set_url: targetForm.url,
+                set_group_keys: targetForm.group_keys,
+                set_enabled: targetForm.enabled,
+              }),
+            });
         pushNotice("success", `已更新套餐 #${editingTarget.index}`);
       } else {
         await request("/api/targets", {
@@ -877,6 +880,24 @@ export default function App() {
       await loadDashboard();
     } catch (error) {
       pushNotice("error", error instanceof Error ? error.message : "删除套餐失败");
+    }
+  }
+
+  async function toggleTargetEnabled(target: TargetItem, enabled: boolean) {
+    if (!checkPermission("targets_update")) {
+      return;
+    }
+    try {
+      await request(`/api/targets/${target.index}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          set_enabled: enabled,
+        }),
+      });
+      pushNotice("success", enabled ? `已启用套餐 #${target.index}` : `已停用套餐 #${target.index}`);
+      await loadDashboard(false);
+    } catch (error) {
+      pushNotice("error", error instanceof Error ? error.message : "更新启停状态失败");
     }
   }
 
@@ -1329,6 +1350,14 @@ export default function App() {
                               </div>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
+                              <label className="flex items-center gap-2 rounded-xl border border-border/60 bg-white/70 px-3 py-2 text-sm">
+                                <span className="text-muted-foreground">启用</span>
+                                <Switch
+                                  checked={target.enabled}
+                                  disabled={!canTargetsUpdate}
+                                  onCheckedChange={(checked) => void toggleTargetEnabled(target, checked)}
+                                />
+                              </label>
                               <Button
                                 type="button"
                                 variant="outline"
@@ -1368,6 +1397,11 @@ export default function App() {
                             <span>最近变更：{target.last_change_ts || "暂无"}</span>
                             <span>失败次数：{target.fail_count || 0}</span>
                             <span>错误连击：{target.last_error_streak || 0}</span>
+                          </div>
+                          <div className="mt-2 grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
+                            <span>启用状态：{target.enabled ? "启用中" : "已停用"}</span>
+                            <span>自动停查计数：{target.consecutive_null_brief_count || 0}</span>
+                            <span>停查原因：{target.disabled_reason || "无"}</span>
                           </div>
                           {target.last_error_text ? (
                             <p className="mt-3 rounded-2xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
@@ -1996,6 +2030,18 @@ export default function App() {
                           }
                         />
                       </DataField>
+                      <label className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-secondary/35 px-4 py-3 text-sm">
+                        <span>启用该监控</span>
+                        <Switch
+                          checked={targetForm.enabled}
+                          onCheckedChange={(checked) =>
+                            setTargetForm((current) => ({
+                              ...current,
+                              enabled: checked,
+                            }))
+                          }
+                        />
+                      </label>
                       <DataField label="通知分组" hint="可多选，至少选择一个分组。">
                         <div className="grid gap-3 rounded-[1.15rem] border border-border/70 bg-secondary/35 p-3">
                           {dashboard.notify_groups.map((group) => {

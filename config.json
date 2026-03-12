@@ -48,41 +48,5 @@
       "Mozilla/5.0 (Linux; Android 13; M2012K11AC) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36"
     ]
   },
-  "targets": [
-    {
-      "name": "大众点评套餐 (544162508)",
-      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=544162508",
-      "activity_id": "544162508"
-    },
-    {
-      "name": "VIP专属立减90元",
-      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1665618334",
-      "activity_id": "1665618334"
-    },
-    {
-      "name": "刘家猪蹄大王武汉29.9",
-      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1221425037",
-      "activity_id": "1221425037"
-    },
-    {
-      "name": "欢乐牧场上海VIP专属立减69.5元，超值3.6折",
-      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=2034720710",
-      "activity_id": "2034720710"
-    },
-    {
-      "name": "哈尔滨 市南自助VIP专属立减49.9元，超值4折",
-      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=949289968",
-      "activity_id": "949289968"
-    },
-    {
-      "name": "北京黑叔美式单人VIP专属立减87元，超值1.2折",
-      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=18963436",
-      "activity_id": "18963436"
-    },
-    {
-      "name": "⭐武汉 洪山区 疆上放羊郎·鲜活烧烤城(白沙洲店) VIP专属立减99元，超值4.9折",
-      "url": "https://m.dianping.com/app/femember-groupbuyinter-static/main.html?activityid=1194010870",
-      "activity_id": "1194010870"
-    }
-  ]
+  "targets": []
 }
