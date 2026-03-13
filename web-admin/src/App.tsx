@@ -1106,8 +1106,21 @@ export default function App() {
     }
     try {
       await request(`/api/targets/${target.index}`, { method: "DELETE" });
+      setDashboard((current) => {
+        const targetIndex = current.targets.findIndex((item) => item.index === target.index);
+        if (targetIndex < 0) {
+          return current;
+        }
+        return {
+          ...current,
+          summary: {
+            ...current.summary,
+            total_targets: Math.max(0, current.summary.total_targets - 1),
+          },
+          targets: current.targets.filter((_, index) => index !== targetIndex),
+        };
+      });
       pushNotice("success", `已删除套餐 #${target.index}`);
-      await loadDashboard();
     } catch (error) {
       pushNotice("error", error instanceof Error ? error.message : "删除套餐失败");
     }
@@ -1117,66 +1130,54 @@ export default function App() {
     if (!checkPermission("targets_update")) {
       return;
     }
+    const previousTargetSnapshot = target;
+    setDashboard((current) => {
+      const targetIndex = current.targets.findIndex((item) => item.index === target.index);
+      if (targetIndex < 0) {
+        return current;
+      }
+      const currentTarget = current.targets[targetIndex];
+      if (currentTarget.enabled === enabled) {
+        return current;
+      }
+      const nextTargets = [...current.targets];
+      nextTargets[targetIndex] = {
+        ...currentTarget,
+        enabled,
+      };
+      return {
+        ...current,
+        targets: nextTargets,
+      };
+    });
     try {
-      const payload = await request<{
-        target?: Partial<TargetItem>;
-      }>(`/api/targets/${target.index}`, {
+      await request(`/api/targets/${target.index}`, {
         method: "PATCH",
         body: JSON.stringify({
           set_enabled: enabled,
         }),
       });
+      pushNotice("success", enabled ? `已启用套餐 #${target.index}` : `已停用套餐 #${target.index}`);
+    } catch (error) {
       setDashboard((current) => {
         const targetIndex = current.targets.findIndex((item) => item.index === target.index);
         if (targetIndex < 0) {
           return current;
         }
-        const previousTarget = current.targets[targetIndex];
-        const patchTarget = payload.target || {};
-        const nextEnabled =
-          typeof patchTarget.enabled === "boolean" ? patchTarget.enabled : enabled;
-        const nextTarget: TargetItem = {
-          ...previousTarget,
-          enabled: nextEnabled,
-          disabled_reason:
-            typeof patchTarget.disabled_reason === "string"
-              ? patchTarget.disabled_reason
-              : nextEnabled
-                ? ""
-                : previousTarget.disabled_reason,
-          consecutive_null_brief_count:
-            typeof patchTarget.consecutive_null_brief_count === "number"
-              ? patchTarget.consecutive_null_brief_count
-              : previousTarget.consecutive_null_brief_count,
-          last_error_text:
-            typeof patchTarget.last_error_text === "string"
-              ? patchTarget.last_error_text
-              : previousTarget.last_error_text,
-          last_error_streak:
-            typeof patchTarget.last_error_streak === "number"
-              ? patchTarget.last_error_streak
-              : previousTarget.last_error_streak,
-          fail_count:
-            typeof patchTarget.fail_count === "number"
-              ? patchTarget.fail_count
-              : previousTarget.fail_count,
-          last_change_ts:
-            typeof patchTarget.last_change_ts === "string"
-              ? patchTarget.last_change_ts
-              : previousTarget.last_change_ts,
-        };
-        if (isTargetEqual(previousTarget, nextTarget)) {
+        const currentTarget = current.targets[targetIndex];
+        if (currentTarget.enabled !== enabled) {
           return current;
         }
         const nextTargets = [...current.targets];
-        nextTargets[targetIndex] = nextTarget;
+        nextTargets[targetIndex] = {
+          ...currentTarget,
+          enabled: previousTargetSnapshot.enabled,
+        };
         return {
           ...current,
           targets: nextTargets,
         };
       });
-      pushNotice("success", enabled ? `已启用套餐 #${target.index}` : `已停用套餐 #${target.index}`);
-    } catch (error) {
       pushNotice("error", error instanceof Error ? error.message : "更新启停状态失败");
     }
   }
