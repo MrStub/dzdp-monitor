@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Activity,
   Boxes,
@@ -150,10 +151,10 @@ function GlobalNoticeToast({ notice }: { notice: Notice }) {
   }
 
   return (
-    <div className="pointer-events-none fixed right-4 top-16 z-[120] w-[min(calc(100vw-2rem),420px)]">
+    <div className="pointer-events-none fixed inset-0 z-[120] flex items-center justify-center px-4">
       <div
         className={cn(
-          "rounded-2xl border px-4 py-3 text-sm shadow-lg backdrop-blur",
+          "w-[min(calc(100vw-2rem),420px)] rounded-2xl border px-4 py-3 text-sm shadow-lg backdrop-blur",
           notice.type === "error"
             ? "border-rose-200 bg-rose-50/95 text-rose-800"
             : "border-emerald-200 bg-emerald-50/95 text-emerald-800",
@@ -2095,9 +2096,20 @@ export default function App() {
               </Card>
             ) : null}
 
-            {showAddTargetModal ? (
-              <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/35 p-4 sm:items-center">
-                <Card className="z-50 my-6 w-full max-w-xl max-h-[90vh] overflow-y-auto">
+            {showAddTargetModal
+              ? createPortal(
+                  <div
+                    className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/35 p-4 sm:items-center"
+                    onClick={() => {
+                      setShowAddTargetModal(false);
+                      setEditingTarget(null);
+                      setTargetFormError("");
+                    }}
+                  >
+                <Card
+                  className="z-50 my-6 w-full max-w-xl max-h-[90vh] overflow-y-auto"
+                  onClick={(event) => event.stopPropagation()}
+                >
                   <CardHeader className="pb-3">
                     <CardTitle>{editingTarget ? "编辑监控" : "新增监控"}</CardTitle>
                     <CardDescription>
@@ -2225,8 +2237,10 @@ export default function App() {
                     </form>
                   </CardContent>
                 </Card>
-              </div>
-            ) : null}
+                  </div>,
+                  document.body,
+                )
+              : null}
           </section>
       </main>
     </div>
