@@ -151,10 +151,10 @@ function GlobalNoticeToast({ notice }: { notice: Notice }) {
   }
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-[120] flex items-center justify-center px-4">
+    <div className="pointer-events-none fixed left-1/2 top-[12vh] z-[120] w-[min(calc(100vw-2rem),420px)] -translate-x-1/2 px-4">
       <div
         className={cn(
-          "w-[min(calc(100vw-2rem),420px)] rounded-2xl border px-4 py-3 text-sm shadow-lg backdrop-blur",
+          "rounded-2xl border px-4 py-3 text-sm shadow-lg backdrop-blur",
           notice.type === "error"
             ? "border-rose-200 bg-rose-50/95 text-rose-800"
             : "border-emerald-200 bg-emerald-50/95 text-emerald-800",
@@ -630,7 +630,7 @@ export default function App() {
     }
     const timer = window.setTimeout(() => {
       setNotice((current) => ({ ...current, message: "" }));
-    }, 4000);
+    }, 2000);
     return () => window.clearTimeout(timer);
   }, [notice.message]);
 
