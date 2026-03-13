@@ -1118,14 +1118,64 @@ export default function App() {
       return;
     }
     try {
-      await request(`/api/targets/${target.index}`, {
+      const payload = await request<{
+        target?: Partial<TargetItem>;
+      }>(`/api/targets/${target.index}`, {
         method: "PATCH",
         body: JSON.stringify({
           set_enabled: enabled,
         }),
       });
+      setDashboard((current) => {
+        const targetIndex = current.targets.findIndex((item) => item.index === target.index);
+        if (targetIndex < 0) {
+          return current;
+        }
+        const previousTarget = current.targets[targetIndex];
+        const patchTarget = payload.target || {};
+        const nextEnabled =
+          typeof patchTarget.enabled === "boolean" ? patchTarget.enabled : enabled;
+        const nextTarget: TargetItem = {
+          ...previousTarget,
+          enabled: nextEnabled,
+          disabled_reason:
+            typeof patchTarget.disabled_reason === "string"
+              ? patchTarget.disabled_reason
+              : nextEnabled
+                ? ""
+                : previousTarget.disabled_reason,
+          consecutive_null_brief_count:
+            typeof patchTarget.consecutive_null_brief_count === "number"
+              ? patchTarget.consecutive_null_brief_count
+              : previousTarget.consecutive_null_brief_count,
+          last_error_text:
+            typeof patchTarget.last_error_text === "string"
+              ? patchTarget.last_error_text
+              : previousTarget.last_error_text,
+          last_error_streak:
+            typeof patchTarget.last_error_streak === "number"
+              ? patchTarget.last_error_streak
+              : previousTarget.last_error_streak,
+          fail_count:
+            typeof patchTarget.fail_count === "number"
+              ? patchTarget.fail_count
+              : previousTarget.fail_count,
+          last_change_ts:
+            typeof patchTarget.last_change_ts === "string"
+              ? patchTarget.last_change_ts
+              : previousTarget.last_change_ts,
+        };
+        if (isTargetEqual(previousTarget, nextTarget)) {
+          return current;
+        }
+        const nextTargets = [...current.targets];
+        nextTargets[targetIndex] = nextTarget;
+        return {
+          ...current,
+          targets: nextTargets,
+        };
+      });
       pushNotice("success", enabled ? `已启用套餐 #${target.index}` : `已停用套餐 #${target.index}`);
-      await loadDashboard(false);
     } catch (error) {
       pushNotice("error", error instanceof Error ? error.message : "更新启停状态失败");
     }
