@@ -401,6 +401,14 @@ function normalizeTargetGroupKeys(target: Pick<TargetItem, "group_keys" | "group
   return target.group_key ? [target.group_key] : [];
 }
 
+function resolveGroupNames(groupKeys: string[], groups: NotifyGroup[]) {
+  if (!groupKeys.length) {
+    return [];
+  }
+  const groupLookup = new Map(groups.map((group) => [group.key, group.name]));
+  return groupKeys.map((key) => groupLookup.get(key) || key);
+}
+
 function toggleTargetGroup(groupKeys: string[], groupKey: string, checked: boolean) {
   if (checked) {
     return groupKeys.includes(groupKey) ? groupKeys : [...groupKeys, groupKey];
@@ -967,7 +975,9 @@ export default function App() {
     void (async () => {
       try {
         if (editingTargetSnapshot) {
-          await request(`/api/targets/${editingTargetSnapshot.index}`, {
+          const payload = await request<{
+            target?: Partial<TargetItem>;
+          }>(`/api/targets/${editingTargetSnapshot.index}`, {
             method: "PATCH",
             body: JSON.stringify({
               set_name: targetFormSnapshot.name,
@@ -976,15 +986,110 @@ export default function App() {
               set_enabled: targetFormSnapshot.enabled,
             }),
           });
+          setDashboard((current) => {
+            const targetIndex = current.targets.findIndex(
+              (item) => item.index === editingTargetSnapshot.index,
+            );
+            if (targetIndex < 0) {
+              return current;
+            }
+            const previousTarget = current.targets[targetIndex];
+            const patchTarget = payload.target || {};
+            const nextGroupKeysRaw =
+              Array.isArray(patchTarget.group_keys) && patchTarget.group_keys.length
+                ? patchTarget.group_keys
+                : targetFormSnapshot.group_keys;
+            const nextGroupKeys = isPrimitiveArrayEqual(previousTarget.group_keys, nextGroupKeysRaw)
+              ? previousTarget.group_keys
+              : [...nextGroupKeysRaw];
+            const nextGroupKey = patchTarget.group_key || nextGroupKeys[0] || "";
+            const nextGroupNames = isPrimitiveArrayEqual(previousTarget.group_keys, nextGroupKeysRaw)
+              ? previousTarget.group_names
+              : resolveGroupNames(nextGroupKeys, current.notify_groups);
+            const nextGroupName = nextGroupNames?.[0] || nextGroupKey;
+            const nextTarget: TargetItem = {
+              ...previousTarget,
+              name: typeof patchTarget.name === "string" ? patchTarget.name : targetFormSnapshot.name,
+              url: typeof patchTarget.url === "string" ? patchTarget.url : targetFormSnapshot.url,
+              activity_id:
+                typeof patchTarget.activity_id === "string"
+                  ? patchTarget.activity_id
+                  : previousTarget.activity_id,
+              enabled:
+                typeof patchTarget.enabled === "boolean"
+                  ? patchTarget.enabled
+                  : targetFormSnapshot.enabled,
+              group_keys: nextGroupKeys,
+              group_key: nextGroupKey,
+              group_names: nextGroupNames,
+              group_name: nextGroupName,
+            };
+            const nextTargets = [...current.targets];
+            nextTargets[targetIndex] = nextTarget;
+            return {
+              ...current,
+              targets: nextTargets,
+            };
+          });
           pushNotice("success", `已更新套餐 #${editingTargetSnapshot.index}`);
         } else {
-          await request("/api/targets", {
+          const payload = await request<{
+            total?: number;
+            target?: Partial<TargetItem>;
+          }>("/api/targets", {
             method: "POST",
             body: JSON.stringify(targetFormSnapshot),
           });
+          setDashboard((current) => {
+            const createdTarget = payload.target || {};
+            const nextGroupKeys = normalizeTargetGroupKeys({
+              group_keys: Array.isArray(createdTarget.group_keys) ? createdTarget.group_keys : [],
+              group_key: createdTarget.group_key || targetFormSnapshot.group_keys[0] || "",
+            });
+            const nextGroupNames = resolveGroupNames(nextGroupKeys, current.notify_groups);
+            const fallbackIndex = current.summary.total_targets + 1;
+            const nextTarget: TargetItem = {
+              index:
+                typeof createdTarget.index === "number"
+                  ? createdTarget.index
+                  : typeof payload.total === "number"
+                    ? payload.total
+                    : fallbackIndex,
+              name: String(createdTarget.name || targetFormSnapshot.name),
+              url: String(createdTarget.url || targetFormSnapshot.url),
+              activity_id: String(
+                createdTarget.activity_id ||
+                  parseActivityIdFromInput(String(createdTarget.url || targetFormSnapshot.url)),
+              ),
+              enabled:
+                typeof createdTarget.enabled === "boolean"
+                  ? createdTarget.enabled
+                  : targetFormSnapshot.enabled,
+              group_keys: nextGroupKeys,
+              group_key: createdTarget.group_key || nextGroupKeys[0] || "",
+              group_names: nextGroupNames,
+              group_name: nextGroupNames[0] || createdTarget.group_key || nextGroupKeys[0] || "",
+              last_state: "UNKNOWN",
+              last_sold_out: undefined,
+              last_title: "",
+              last_change_ts: "",
+              last_error_text: "",
+              last_error_streak: 0,
+              fail_count: 0,
+              disabled_reason: "",
+              consecutive_null_brief_count: 0,
+            };
+            return {
+              ...current,
+              summary: {
+                ...current.summary,
+                total_targets: current.summary.total_targets + 1,
+              },
+              targets: [nextTarget, ...current.targets],
+            };
+          });
           pushNotice("success", "已新增套餐");
         }
-        await loadDashboard(false);
       } catch (error) {
         pushNotice("error", error instanceof Error ? error.message : "提交套餐失败");
       }
