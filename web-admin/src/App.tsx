@@ -90,6 +90,27 @@ type Notice = {
   message: string;
 };
 
+function GlobalNoticeToast({ notice }: { notice: Notice }) {
+  if (!notice.message) {
+    return null;
+  }
+
+  return (
+    <div className="pointer-events-none fixed right-4 top-4 z-[120] w-[min(calc(100vw-2rem),420px)]">
+      <div
+        className={cn(
+          "rounded-2xl border px-4 py-3 text-sm shadow-lg backdrop-blur",
+          notice.type === "error"
+            ? "border-rose-200 bg-rose-50/95 text-rose-800"
+            : "border-emerald-200 bg-emerald-50/95 text-emerald-800",
+        )}
+      >
+        {notice.message}
+      </div>
+    </div>
+  );
+}
+
 type LoadingState = {
   dashboard: boolean;
   loginSubmit: boolean;
@@ -851,7 +872,7 @@ export default function App() {
     setShowAddTargetModal(true);
   }
 
-  async function submitTarget(event: React.FormEvent<HTMLFormElement>) {
+  function submitTarget(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const permission = editingTarget ? "targets_update" : "targets_create";
     if (!checkPermission(permission)) {
@@ -894,7 +915,7 @@ export default function App() {
           });
           pushNotice("success", "已新增套餐");
         }
-        await loadDashboard();
+        await loadDashboard(false);
       } catch (error) {
         pushNotice("error", error instanceof Error ? error.message : "提交套餐失败");
       }
@@ -1097,20 +1118,7 @@ export default function App() {
       <div className="app-shell glass-grid relative min-h-screen overflow-x-hidden">
         <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[radial-gradient(circle_at_top_right,rgba(244,115,74,0.22),transparent_45%)]" />
         <div className="pointer-events-none absolute bottom-0 left-0 h-72 w-72 rounded-full bg-[radial-gradient(circle,rgba(83,168,153,0.24),transparent_65%)] blur-3xl" />
-        {notice.message ? (
-          <div className="fixed right-4 top-4 z-50 w-[min(92vw,420px)]">
-            <div
-              className={cn(
-                "rounded-xl border px-4 py-3 text-sm shadow-lg backdrop-blur",
-                notice.type === "error"
-                  ? "border-rose-200 bg-rose-50/95 text-rose-800"
-                  : "border-emerald-200 bg-emerald-50/95 text-emerald-800",
-              )}
-            >
-              {notice.message}
-            </div>
-          </div>
-        ) : null}
+        <GlobalNoticeToast notice={notice} />
         <main className="container relative z-10 py-8 sm:py-10">
           <div className="mx-auto max-w-lg">
             <Card className="border-white/65 bg-white/88">
@@ -1194,6 +1202,7 @@ export default function App() {
     <div className="app-shell glass-grid relative min-h-screen overflow-x-hidden">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[radial-gradient(circle_at_top_right,rgba(244,115,74,0.22),transparent_45%)]" />
       <div className="pointer-events-none absolute bottom-0 left-0 h-72 w-72 rounded-full bg-[radial-gradient(circle,rgba(83,168,153,0.24),transparent_65%)] blur-3xl" />
+      <GlobalNoticeToast notice={notice} />
 
       <main className="container relative z-10 py-4 sm:py-6 lg:py-8">
         <section className="min-w-0 space-y-5 pb-8">
@@ -1257,19 +1266,6 @@ export default function App() {
               </div>
             </CardContent>
           </Card>
-
-          {notice.message ? (
-            <div
-              className={cn(
-                "rounded-[1.4rem] border px-4 py-3 text-sm shadow-sm",
-                notice.type === "error"
-                  ? "border-rose-200 bg-rose-50 text-rose-800"
-                  : "border-emerald-200 bg-emerald-50 text-emerald-800",
-              )}
-            >
-              {notice.message}
-            </div>
-          ) : null}
 
           <Card className="border-white/65 bg-white/72">
             <CardContent className="flex min-w-0 flex-col gap-4 p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between">
