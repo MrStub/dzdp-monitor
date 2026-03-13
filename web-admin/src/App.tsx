@@ -150,7 +150,7 @@ function GlobalNoticeToast({ notice }: { notice: Notice }) {
   }
 
   return (
-    <div className="pointer-events-none fixed right-4 top-4 z-[120] w-[min(calc(100vw-2rem),420px)]">
+    <div className="pointer-events-none fixed right-4 top-16 z-[120] w-[min(calc(100vw-2rem),420px)]">
       <div
         className={cn(
           "rounded-2xl border px-4 py-3 text-sm shadow-lg backdrop-blur",
