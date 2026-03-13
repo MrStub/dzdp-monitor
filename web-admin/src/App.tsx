@@ -712,22 +712,31 @@ export default function App() {
     }
   }
 
-  async function handleLogout() {
-    try {
-      if (authToken.trim()) {
-        await request("/api/auth/logout", { method: "POST" });
-      }
-    } catch {
-      // ignore logout API errors to keep local sign-out deterministic
-    } finally {
-      setAuthToken("");
-      setMe(null);
-      setUsers([]);
-      setShowAddTargetModal(false);
-      setEditingTarget(null);
-      window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
-      pushNotice("success", "已退出登录");
+  function resetSessionState() {
+    setAuthToken("");
+    setMe(null);
+    setUsers([]);
+    setDashboard(defaultDashboard());
+    setDashboardReady(false);
+    setActiveTab("targets");
+    setShowAddTargetModal(false);
+    setEditingTarget(null);
+    window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
+  }
+
+  function handleLogout() {
+    const logoutToken = authToken.trim();
+
+    resetSessionState();
+    pushNotice("success", "已退出登录");
+
+    if (!logoutToken) {
+      return;
     }
+
+    void apiRequest(apiBaseUrl, logoutToken, "/api/auth/logout", { method: "POST" }).catch((error) => {
+      pushNotice("error", error instanceof Error ? error.message : "退出登录请求失败");
+    });
   }
 
   async function loadUsers(force = false) {
