@@ -85,6 +85,60 @@ function defaultDashboard(): Dashboard {
   };
 }
 
+function getTargetIdentity(target: TargetItem) {
+  if (target.index !== undefined && target.index !== null) {
+    return `index:${target.index}`;
+  }
+  return `fallback:${target.activity_id}:${target.name}`;
+}
+
+function isPrimitiveArrayEqual<T>(left: T[] | undefined, right: T[] | undefined) {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right || left.length !== right.length) {
+    return false;
+  }
+  return left.every((value, index) => value === right[index]);
+}
+
+function isTargetEqual(left: TargetItem, right: TargetItem) {
+  return (
+    left.index === right.index &&
+    left.name === right.name &&
+    left.url === right.url &&
+    left.activity_id === right.activity_id &&
+    left.enabled === right.enabled &&
+    isPrimitiveArrayEqual(left.group_keys, right.group_keys) &&
+    left.group_key === right.group_key &&
+    isPrimitiveArrayEqual(left.group_names, right.group_names) &&
+    left.group_name === right.group_name &&
+    left.last_state === right.last_state &&
+    left.last_sold_out === right.last_sold_out &&
+    left.last_title === right.last_title &&
+    left.last_change_ts === right.last_change_ts &&
+    left.last_error_text === right.last_error_text &&
+    left.last_error_streak === right.last_error_streak &&
+    left.fail_count === right.fail_count &&
+    left.disabled_reason === right.disabled_reason &&
+    left.consecutive_null_brief_count === right.consecutive_null_brief_count
+  );
+}
+
+function mergeTargets(previousTargets: TargetItem[], nextTargets: TargetItem[]) {
+  const previousByIdentity = new Map(
+    previousTargets.map((target) => [getTargetIdentity(target), target]),
+  );
+
+  return nextTargets.map((target) => {
+    const previousTarget = previousByIdentity.get(getTargetIdentity(target));
+    if (!previousTarget) {
+      return target;
+    }
+    return isTargetEqual(previousTarget, target) ? previousTarget : target;
+  });
+}
+
 type Notice = {
   type: NoticeType;
   message: string;
@@ -827,7 +881,10 @@ export default function App() {
   }
 
   function applyDashboard(payload: Dashboard) {
-    setDashboard(payload);
+    setDashboard((current) => ({
+      ...payload,
+      targets: mergeTargets(current.targets, payload.targets),
+    }));
     setDashboardReady(true);
     setPollSeconds(payload.poll.interval_seconds || 60);
     setTargetForm((current) => {
