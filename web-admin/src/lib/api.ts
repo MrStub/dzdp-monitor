@@ -7,10 +7,14 @@ function resolveDefaultBaseUrl() {
     return fromEnv;
   }
 
-  const hostname = typeof window !== "undefined" ? window.location.hostname : "";
-  if (hostname === "localhost" || hostname === "127.0.0.1") {
-    return LOCAL_BASE_URL;
+  if (typeof window !== "undefined") {
+    const hostname = window.location.hostname;
+    if (hostname === "localhost" || hostname === "127.0.0.1") {
+      return LOCAL_BASE_URL;
+    }
+    return window.location.origin;
   }
+
   return ONLINE_BASE_URL;
 }
 

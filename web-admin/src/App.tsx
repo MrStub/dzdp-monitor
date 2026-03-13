@@ -679,10 +679,6 @@ export default function App() {
       setLoginFormError("");
       setLoginUsernameError("");
       setLoginPasswordError("");
-      await loadDashboard(false);
-      if (payload.user.is_admin) {
-        await loadUsers(true);
-      }
       pushNotice("success", `已登录：${payload.user.username}`);
     } catch (error) {
       const failure = resolveLoginFailure(error);

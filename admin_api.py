@@ -371,8 +371,6 @@ class AuthStore:
     def login(self, username: str, password: str, *, ip: str, user_agent: str) -> Dict[str, Any]:
         conn = self._connect()
         try:
-            self._ensure_schema(conn)
-            self._ensure_default_admin(conn)
             row = conn.execute(
                 """
                 SELECT id, username, password_hash, password_salt, is_admin, is_active
@@ -420,8 +418,6 @@ class AuthStore:
             return None
         conn = self._connect()
         try:
-            self._ensure_schema(conn)
-            self._ensure_default_admin(conn)
             token_row = conn.execute(
                 """
                 SELECT s.user_id, s.expires_at, s.revoked_at, u.id, u.username, u.is_admin, u.is_active
@@ -467,7 +463,6 @@ class AuthStore:
             return {"action": "legacy_token_noop"}
         conn = self._connect()
         try:
-            self._ensure_schema(conn)
             now_iso = _to_iso(_utcnow())
             cursor = conn.execute(
                 """
