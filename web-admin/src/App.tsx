@@ -617,12 +617,6 @@ export default function App() {
   }, [authToken, apiBaseUrl]);
 
   useEffect(() => {
-    if (canManagePermissions && isLoggedIn) {
-      void loadUsers();
-    }
-  }, [canManagePermissions, isLoggedIn]);
-
-  useEffect(() => {
     if (!users.length) {
       setPermissionUserId("");
       return;
@@ -712,6 +706,11 @@ export default function App() {
     try {
       const payload = await loadMe();
       await loadDashboard(false);
+      if (payload.user.is_admin) {
+        await loadUsers(true);
+      } else {
+        setUsers([]);
+      }
       if (withNotice) {
         pushNotice("success", `已登录：${payload.user.username}`);
       }
@@ -755,11 +754,13 @@ export default function App() {
       })) as { token: string; user: AuthUser; permissions: UserPermissions };
       setAuthToken(payload.token || "");
       setMe({ user: payload.user, permissions: payload.permissions });
-      window.localStorage.setItem(API_TOKEN_STORAGE_KEY, payload.token || "");
-      persistRememberedLogin(loginRemember, username, loginPassword);
-      if (!loginRemember) {
-        setLoginPassword("");
-      }
+      window.setTimeout(() => {
+        window.localStorage.setItem(API_TOKEN_STORAGE_KEY, payload.token || "");
+        persistRememberedLogin(loginRemember, username, loginPassword);
+        if (!loginRemember) {
+          setLoginPassword("");
+        }
+      }, 0);
       setLoginFormError("");
       setLoginUsernameError("");
       setLoginPasswordError("");
