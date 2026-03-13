@@ -861,37 +861,44 @@ export default function App() {
       setTargetFormError("链接无效：未识别 activity_id，请检查链接或手动填写 activity_id");
       return;
     }
-    setTargetFormError("");
-    setLoading((current) => ({ ...current, targetSubmit: true }));
-    try {
-      if (editingTarget) {
-        await request(`/api/targets/${editingTarget.index}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            set_name: targetForm.name,
-                set_url: targetForm.url,
-                set_group_keys: targetForm.group_keys,
-                set_enabled: targetForm.enabled,
-              }),
-            });
-        pushNotice("success", `已更新套餐 #${editingTarget.index}`);
-      } else {
-        await request("/api/targets", {
-          method: "POST",
-          body: JSON.stringify(targetForm),
-        });
-        pushNotice("success", "已新增套餐");
-      }
-      setShowAddTargetModal(false);
-      setEditingTarget(null);
-      setTargetForm(createTargetForm(dashboard.notify_groups[0]?.key ? [dashboard.notify_groups[0].key] : []));
-      setTargetFormError("");
-      await loadDashboard();
-    } catch (error) {
-      pushNotice("error", error instanceof Error ? error.message : "提交套餐失败");
-    } finally {
-      setLoading((current) => ({ ...current, targetSubmit: false }));
+    if (dashboard.notify_groups.length > 0 && targetForm.group_keys.length === 0) {
+      return;
     }
+
+    const editingTargetSnapshot = editingTarget;
+    const targetFormSnapshot = { ...targetForm, group_keys: [...targetForm.group_keys] };
+    const defaultGroupKeys = dashboard.notify_groups[0]?.key ? [dashboard.notify_groups[0].key] : [];
+
+    setTargetFormError("");
+    setShowAddTargetModal(false);
+    setEditingTarget(null);
+    setTargetForm(createTargetForm(defaultGroupKeys));
+
+    void (async () => {
+      try {
+        if (editingTargetSnapshot) {
+          await request(`/api/targets/${editingTargetSnapshot.index}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              set_name: targetFormSnapshot.name,
+              set_url: targetFormSnapshot.url,
+              set_group_keys: targetFormSnapshot.group_keys,
+              set_enabled: targetFormSnapshot.enabled,
+            }),
+          });
+          pushNotice("success", `已更新套餐 #${editingTargetSnapshot.index}`);
+        } else {
+          await request("/api/targets", {
+            method: "POST",
+            body: JSON.stringify(targetFormSnapshot),
+          });
+          pushNotice("success", "已新增套餐");
+        }
+        await loadDashboard();
+      } catch (error) {
+        pushNotice("error", error instanceof Error ? error.message : "提交套餐失败");
+      }
+    })();
   }
 
   async function removeTarget(target: TargetItem) {
@@ -2131,7 +2138,6 @@ export default function App() {
                         <Button
                           type="submit"
                           disabled={
-                            loading.targetSubmit ||
                             (dashboard.notify_groups.length > 0 && targetForm.group_keys.length === 0) ||
                             (editingTarget ? !canTargetsUpdate : !canTargetsCreate)
                           }
@@ -2145,11 +2151,7 @@ export default function App() {
                                 : "当前账号无新增监控项权限"
                           }
                         >
-                          {loading.targetSubmit
-                            ? "提交中..."
-                            : editingTarget
-                              ? "保存修改"
-                              : "提交"}
+                          {editingTarget ? "保存修改" : "提交"}
                         </Button>
                       </div>
                     </form>
