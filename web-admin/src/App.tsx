@@ -489,7 +489,7 @@ export default function App() {
     getLocalValue(API_TOKEN_STORAGE_KEY, ""),
   );
   const [dashboard, setDashboard] = useState<Dashboard>(defaultDashboard);
-  const [, setDashboardReady] = useState(false);
+  const [dashboardReady, setDashboardReady] = useState(false);
   const [notice, setNotice] = useState<Notice>({ type: "success", message: "" });
   const [loading, setLoading] = useState<LoadingState>({
     dashboard: false,
@@ -1356,7 +1356,11 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="grid gap-3">
-                    {dashboard.targets.length ? (
+                    {loading.dashboard || !dashboardReady ? (
+                      <div className="rounded-[1.35rem] border border-dashed border-border bg-secondary/30 p-5 text-sm text-muted-foreground">
+                        加载中...
+                      </div>
+                    ) : dashboard.targets.length ? (
                       dashboard.targets.map((target) => (
                         <div
                           key={`${target.activity_id}-${target.index}`}
@@ -1442,7 +1446,7 @@ export default function App() {
                       ))
                     ) : (
                       <div className="rounded-[1.35rem] border border-dashed border-border bg-secondary/30 p-5 text-sm text-muted-foreground">
-                        还没有监控套餐，先新增一个。
+                        还没有监控套餐，点击右上角“新增监控”开始配置。
                       </div>
                     )}
                     </div>
