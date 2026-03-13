@@ -883,18 +883,16 @@ export default function App() {
 
   function submitTarget(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const permission = editingTarget ? "targets_update" : "targets_create";
-    if (!checkPermission(permission)) {
-      return;
-    }
     if (!parseActivityIdFromInput(targetForm.url)) {
       setTargetFormError("链接无效：未识别 activity_id，请检查链接或手动填写 activity_id");
       return;
     }
     if (dashboard.notify_groups.length > 0 && targetForm.group_keys.length === 0) {
+      setTargetFormError("请至少选择一个通知分组");
       return;
     }
 
+    const permission = editingTarget ? "targets_update" : "targets_create";
     const editingTargetSnapshot = editingTarget;
     const targetFormSnapshot = { ...targetForm, group_keys: [...targetForm.group_keys] };
     const defaultGroupKeys = dashboard.notify_groups[0]?.key ? [dashboard.notify_groups[0].key] : [];
@@ -903,6 +901,10 @@ export default function App() {
     setShowAddTargetModal(false);
     setEditingTarget(null);
     setTargetForm(createTargetForm(defaultGroupKeys));
+
+    if (!checkPermission(permission)) {
+      return;
+    }
 
     void (async () => {
       try {
