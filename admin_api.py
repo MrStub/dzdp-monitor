@@ -1247,6 +1247,8 @@ class AdminApiHandler(BaseHTTPRequestHandler):
                     "consecutive_null_brief_count": int(state.get("consecutive_null_brief_count") or 0),
                 }
             )
+        # Keep the newest targets first in admin views.
+        enriched.sort(key=lambda item: int(item.get("index") or 0), reverse=True)
         return enriched
 
     def _load_state_snapshot(self, db_path: str) -> Dict[str, Dict[str, Any]]:
